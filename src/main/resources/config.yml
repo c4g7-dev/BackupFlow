@@ -10,10 +10,12 @@ s3:
 
 backup:
   include:
-    worlds: ["world", "world_nether", "world_the_end"]
-    plugins: true
-    configs: true
-    extraPaths: []  # Add additional relative paths
+    # Use '*' in worlds list (or leave all include fields empty) to auto-detect all worlds (folders containing level.dat)
+    # If ALL of: worlds list empty, extraPaths empty, and plugins/configs not explicitly set -> implicit '*'
+    worlds: ["world", "world_nether", "world_the_end"]  # or ["*"] for auto-detect
+    plugins: true      # omit AND use '*' to auto include
+    configs: true      # omit AND use '*' to auto include
+    extraPaths: []     # additional relative paths; '*' here is ignored
   compression: zip   # zip | gz (tar.gz) | none
   chunkSizeMB: 32    # reserved for future incremental diff logic
   retention:

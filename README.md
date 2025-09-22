@@ -22,6 +22,7 @@ BackupFlow centralizes automated world + config + plugin backups in object stora
 ## Features
 - Worlds + Nether + End + optional extra paths
 - Optional plugin + config inclusion
+- Wildcard include: use `*` to auto-detect all worlds (folders with level.dat) and implicitly include plugins + configs when explicit lists are omitted
 - ZIP compression (tar.gz planned)
 - Randomized jitter scheduling to avoid cluster spikes
 - Manifests stored alongside backups (JSON)
@@ -85,10 +86,12 @@ s3:
 
 backup:
   include:
-    worlds: ["world", "world_nether", "world_the_end"]
-    plugins: true
-    configs: true
-    extraPaths: []
+    # Use ["*"] to auto-detect worlds (any directory containing level.dat)
+    # If worlds + extraPaths empty and plugins/configs keys omitted => implicit '*'
+    worlds: ["world", "world_nether", "world_the_end"]  # or ["*"]
+    plugins: true   # omit when using '*' for auto include
+    configs: true   # omit when using '*' for auto include
+    extraPaths: []  # '*' ignored here; enumerate explicit extra paths
   compression: zip
   retention:
     enableLifecycle: false

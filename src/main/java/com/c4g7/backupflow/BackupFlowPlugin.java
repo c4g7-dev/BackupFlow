@@ -99,22 +99,61 @@ public class BackupFlowPlugin extends JavaPlugin {
     }
 
     private void collectSources(Path buildDir) throws IOException {
-        // Worlds
-        for (String w : cfg.getStringList("backup.include.worlds")) {
+        // Determine effective sections based on wildcard rules
+        List<String> worlds = cfg.getStringList("backup.include.worlds");
+        boolean plugins = cfg.getBoolean("backup.include.plugins", true);
+        boolean configs = cfg.getBoolean("backup.include.configs", true);
+        List<String> extra = cfg.getStringList("backup.include.extraPaths");
+
+        boolean wildcard = false;
+        if (worlds.stream().anyMatch(s -> s.equalsIgnoreCase("*"))) wildcard = true;
+        if (extra.stream().anyMatch(s -> s.equalsIgnoreCase("*"))) wildcard = true;
+
+        // If all lists empty and booleans absent => treat as wildcard (include everything sensible)
+        if ((worlds.isEmpty()) && extra.isEmpty() && !cfg.isSet("backup.include.plugins") && !cfg.isSet("backup.include.configs")) {
+            wildcard = true;
+        }
+
+        if (wildcard) {
+            // Worlds: auto-detect directories with level.dat (standard MC worlds)
+            try (var stream = Files.list(Path.of("."))) {
+                stream.filter(p -> Files.isDirectory(p) && Files.exists(p.resolve("level.dat")))
+                        .forEach(p -> {
+                            try { copyIfExists(p, buildDir.resolve("worlds").resolve(p.getFileName().toString())); } catch (IOException ignored) { }
+                        });
+            }
+            // Plugins
+            copyIfExists(Path.of("plugins"), buildDir.resolve("plugins"));
+            // Config roots
+            copyIfExists(Path.of("server.properties"), buildDir.resolve("configs/server.properties"));
+            copyIfExists(Path.of("bukkit.yml"), buildDir.resolve("configs/bukkit.yml"));
+            copyIfExists(Path.of("spigot.yml"), buildDir.resolve("configs/spigot.yml"));
+            copyIfExists(Path.of("paper-global.yml"), buildDir.resolve("configs/paper-global.yml"));
+            // No extras in wildcard unless specified
+            for (String ex : extra) {
+                if (ex.equals("*")) continue;
+                copyIfExists(Path.of(ex), buildDir.resolve("extra").resolve(ex));
+            }
+            return;
+        }
+
+        // Explicit worlds list
+        for (String w : worlds) {
+            if (w.equals("*")) continue; // already handled
             copyIfExists(Path.of(w), buildDir.resolve("worlds").resolve(w));
         }
-        if (cfg.getBoolean("backup.include.plugins", true)) {
+        if (plugins) {
             copyIfExists(Path.of("plugins"), buildDir.resolve("plugins"));
         }
-        if (cfg.getBoolean("backup.include.configs", true)) {
-            // server root configs
+        if (configs) {
             copyIfExists(Path.of("server.properties"), buildDir.resolve("configs/server.properties"));
             copyIfExists(Path.of("bukkit.yml"), buildDir.resolve("configs/bukkit.yml"));
             copyIfExists(Path.of("spigot.yml"), buildDir.resolve("configs/spigot.yml"));
             copyIfExists(Path.of("paper-global.yml"), buildDir.resolve("configs/paper-global.yml"));
         }
-        for (String extra : cfg.getStringList("backup.include.extraPaths")) {
-            copyIfExists(Path.of(extra), buildDir.resolve("extra").resolve(extra));
+        for (String ex : extra) {
+            if (ex.equals("*")) continue; // wildcard not meaningful here
+            copyIfExists(Path.of(ex), buildDir.resolve("extra").resolve(ex));
         }
     }
 
