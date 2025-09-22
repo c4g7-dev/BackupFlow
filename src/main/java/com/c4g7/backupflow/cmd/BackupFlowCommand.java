@@ -27,8 +27,9 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
             switch (sub) {
                 case "backup":
                     require(sender, "backupflow.backup");
-                    plugin.runBackup("manual");
-                    sender.sendMessage("§aBackup started.");
+                    if (plugin.startBackupAsync("manual", sender)) {
+                        sender.sendMessage("§7Backup queued.");
+                    }
                     return true;
                 case "restore":
                     require(sender, "backupflow.restore");

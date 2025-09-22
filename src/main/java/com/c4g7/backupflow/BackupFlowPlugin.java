@@ -15,6 +15,7 @@ public class BackupFlowPlugin extends JavaPlugin {
     private FileConfiguration cfg;
     private int taskId = -1;
     private String serverId;
+    private volatile boolean backupRunning = false;
 
     @Override
     public void onEnable() {
@@ -75,11 +76,11 @@ public class BackupFlowPlugin extends JavaPlugin {
         long jitter = cfg.getLong("backup.schedule.jitterSeconds", 30L) * 20L;
         long delay = 100L + ThreadLocalRandom.current().nextLong(jitter + 1);
         taskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
-            try {
-                runBackup("scheduled");
-            } catch (Exception e) {
-                getLogger().warning("Scheduled backup failed: " + e.getMessage());
+            if (backupRunning) {
+                getLogger().info("Skip scheduled backup: previous still running");
+                return;
             }
+            startBackupAsync("scheduled", null);
         }, delay, ticks);
     }
 
@@ -108,6 +109,28 @@ public class BackupFlowPlugin extends JavaPlugin {
             com.c4g7.backupflow.util.FileUtils.deleteQuietly(buildDir);
         }
     }
+
+    public boolean startBackupAsync(String reason, org.bukkit.command.CommandSender initiator) {
+        if (backupRunning) {
+            if (initiator != null) initiator.sendMessage("§cBackup already running");
+            return false;
+        }
+        backupRunning = true;
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                runBackup(reason);
+                if (initiator != null) initiator.sendMessage("§aBackup completed.");
+            } catch (Exception ex) {
+                getLogger().warning("Backup failed: " + ex.getMessage());
+                if (initiator != null) initiator.sendMessage("§cBackup failed: " + ex.getMessage());
+            } finally {
+                backupRunning = false;
+            }
+        });
+        return true;
+    }
+
+    public boolean isBackupRunning() { return backupRunning; }
 
     private void collectSources(Path buildDir) throws IOException {
         // Determine effective sections based on wildcard rules
