@@ -43,3 +43,6 @@ logging:
 
 metrics:
   enabled: true
+
+# List existing backups at startup (counts only)
+autoListOnStart: true

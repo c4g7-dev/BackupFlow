@@ -16,6 +16,7 @@ public class BackupFlowPlugin extends JavaPlugin {
     private int taskId = -1;
     private String serverId;
     private volatile boolean backupRunning = false;
+    private String prefix;
 
     @Override
     public void onEnable() {
@@ -39,6 +40,8 @@ public class BackupFlowPlugin extends JavaPlugin {
         }
         registerCommands();
         scheduleAutoBackup();
+        initPrefix();
+        listOnStartup();
         getLogger().info("BackupFlow enabled. ServerId=" + serverId);
     }
 
@@ -58,6 +61,25 @@ public class BackupFlowPlugin extends JavaPlugin {
             if (name != null && !name.isBlank()) return name.replaceAll("[^a-zA-Z0-9-_]","-");
         } catch (Exception ignored) { }
         return "srv" + Integer.toHexString(ThreadLocalRandom.current().nextInt());
+    }
+
+    private void initPrefix() {
+        // Blue gradient style similar concept to SchemFlow but blue tones
+        this.prefix = "§b§lB§3§lF§r§7 » §r"; // BackupFlow => BF style
+    }
+
+    public String pref() { return prefix; }
+
+    private void listOnStartup() {
+        if (!cfg.getBoolean("autoListOnStart", false)) return;
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var list = storage.listBackups("full");
+                getLogger().info("Found " + list.size() + " backups (full)");
+            } catch (Exception ex) {
+                getLogger().warning("List on start failed: " + ex.getMessage());
+            }
+        });
     }
 
     private void registerCommands() {

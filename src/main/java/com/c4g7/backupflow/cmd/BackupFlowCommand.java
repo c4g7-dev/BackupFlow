@@ -28,7 +28,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                 case "backup":
                     require(sender, "backupflow.backup");
                     if (plugin.startBackupAsync("manual", sender)) {
-                        sender.sendMessage("§7Backup queued.");
+                        sender.sendMessage(plugin.pref() + "§7Backup queued.");
                     }
                     return true;
                 case "restore":
@@ -52,7 +52,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                         }
                     }
                     plugin.restoreBackupAsync(ts, sections, force, sender);
-                    sender.sendMessage("§7Restore queued for " + ts + (sections.isEmpty()?" (all sections)":" sections=" + sections));
+                    sender.sendMessage(plugin.pref() + "§7Restore queued §f" + ts + (sections.isEmpty()?" §8(all sections)":" §8sections=" + sections));
                     return true;
                 case "verify":
                     require(sender, "backupflow.verify");
@@ -70,7 +70,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                             }
                         }
                     }
-                    sender.sendMessage("§7Verification queued for " + vts + (vSections.isEmpty()?" (all sections)":" sections=" + vSections));
+                    sender.sendMessage(plugin.pref() + "§7Verify queued §f" + vts + (vSections.isEmpty()?" §8(all sections)":" §8sections=" + vSections));
                     plugin.verifyBackupAsync(vts, vSections, sender);
                     return true;
                 case "retention":
@@ -83,35 +83,38 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                         }
                         try {
                             java.util.List<String> plan = plugin.retentionPlan(keepDays, max);
-                            sender.sendMessage("§eRetention plan (" + plan.size() + "):");
-                            for (int pi=0; pi<plan.size(); pi++) sender.sendMessage("§7 - " + plan.get(pi));
+                            sender.sendMessage(plugin.pref() + "§bRetention plan §7(" + plan.size() + "):");
+                            for (int pi=0; pi<plan.size(); pi++) sender.sendMessage("§7 - §f" + plan.get(pi));
                         } catch (Exception ex) {
-                            sender.sendMessage("§cRetention plan failed: " + ex.getMessage());
+                            sender.sendMessage(plugin.pref() + "§cRetention plan failed: " + ex.getMessage());
                         }
                         return true;
                     }
-                    sender.sendMessage("§cUsage: /" + label + " retention plan [--keepDays N] [--max N]");
+                    sender.sendMessage(plugin.pref() + "§cUsage: /" + label + " retention plan [--keepDays N] [--max N]");
                     return true;
                 case "list":
                     require(sender, "backupflow.list");
                     var list = plugin.getStorage().listBackups("full");
-                    sender.sendMessage("§eFull Backups (" + list.size() + "): " + list);
+                    sender.sendMessage(plugin.pref() + "§bBackups §7(" + list.size() + "):");
+                    if (list.isEmpty()) sender.sendMessage("§8 (none)");
+                    else sender.sendMessage("§7 " + list);
                     return true;
                 case "manifests":
                     require(sender, "backupflow.manifests");
                     var manifests = plugin.getStorage().listManifests();
-                    sender.sendMessage("§eManifests (" + manifests.size() + "): " + manifests);
+                    sender.sendMessage(plugin.pref() + "§bManifests §7(" + manifests.size() + "):");
+                    if (manifests.isEmpty()) sender.sendMessage("§8 (none)"); else sender.sendMessage("§7 " + manifests);
                     return true;
                 case "version":
                     require(sender, "backupflow.version");
-                    sender.sendMessage("BackupFlow " + plugin.getDescription().getVersion());
+                    sender.sendMessage(plugin.pref() + "§fBackupFlow §b" + plugin.getDescription().getVersion());
                     return true;
                 default:
-                    sender.sendMessage("§cUnknown subcommand. /" + label + " help");
+                    sender.sendMessage(plugin.pref() + "§cUnknown subcommand. /" + label + " help");
                     return true;
             }
         } catch (Exception e) {
-            sender.sendMessage("§cError: " + e.getMessage());
+            sender.sendMessage(plugin.pref() + "§cError: " + e.getMessage());
             return true;
         }
     }
@@ -123,10 +126,12 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
     }
 
     private void sendHelp(CommandSender s) {
-        s.sendMessage("§b§lBackupFlow Commands:");
+        s.sendMessage(plugin.pref() + "§bCommands:");
         s.sendMessage("§f/backupflow backup §7- run full backup");
-    s.sendMessage("§f/backupflow list §7- list backup timestamps");
-    s.sendMessage("§f/backupflow restore <ts> [--select worlds,plugins,...] [--force] §7- restore backup");
+        s.sendMessage("§f/backupflow list §7- list backup timestamps");
+        s.sendMessage("§f/backupflow restore <ts> [--select worlds,plugins,...] [--force] §7- restore backup");
+        s.sendMessage("§f/backupflow verify <ts> [--select ...] §7- verify archive hashes");
+        s.sendMessage("§f/backupflow retention plan [--keepDays N] [--max N] §7- retention preview");
         s.sendMessage("§f/backupflow manifests §7- list manifest files");
         s.sendMessage("§f/backupflow version §7- show plugin version");
     }
@@ -139,12 +144,21 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
             for (String opt : List.of("help","backup","list","restore","verify","retention","manifests","version")) {
                 if (opt.startsWith(a)) out.add(opt);
             }
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("restore")) {
-            try {
-                for (String ts : plugin.getStorage().listBackups("full")) {
-                    if (ts.startsWith(args[1])) out.add(ts);
-                }
-            } catch (Exception ignored) { }
+        } else if (args.length == 2 && (args[0].equalsIgnoreCase("restore") || args[0].equalsIgnoreCase("verify"))) {
+            try { for (String ts : plugin.getStorage().listBackups("full")) if (ts.startsWith(args[1])) out.add(ts); } catch (Exception ignored) { }
+        } else if (args[0].equalsIgnoreCase("restore") || args[0].equalsIgnoreCase("verify")) {
+            // suggest flags
+            String last = args[args.length-1].toLowerCase();
+            for (String opt : List.of("--select","--force")) {
+                if (opt.startsWith(last)) out.add(opt);
+            }
+        } else if (args[0].equalsIgnoreCase("retention") && args.length >=2 ) {
+            if (args.length == 2) {
+                if ("plan".startsWith(args[1].toLowerCase())) out.add("plan");
+            } else {
+                String last = args[args.length-1].toLowerCase();
+                for (String opt : List.of("--keepDays","--max")) if (opt.startsWith(last)) out.add(opt);
+            }
         }
         return out;
     }
