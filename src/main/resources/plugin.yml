@@ -1,0 +1,15 @@
+name: BackupFlow
+main: com.c4g7.backupflow.BackupFlowPlugin
+version: ${project.version}
+author: c4g7-dev
+description: Cloud-native incremental backup manager using S3/MinIO
+api-version: '1.20'
+commands:
+  BackupFlow:
+    description: BackupFlow root command
+    usage: /<command> help
+    aliases: [bf]
+permissions:
+  backupflow.admin:
+    description: All BackupFlow permissions
+    default: op

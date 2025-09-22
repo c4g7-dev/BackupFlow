@@ -1,0 +1,20 @@
+# Build output
+/target/
+
+# IDE metadata
+.idea/
+*.iml
+.project
+.classpath
+/.settings/
+
+# Logs & temp
+*.log
+hs_err_pid*
+/replay_pid*
+/tmp/
+/work/
+
+# OS noise
+.DS_Store
+Thumbs.db

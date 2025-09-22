@@ -1,0 +1,40 @@
+# BackupFlow Configuration
+
+s3:
+  endpoint: "play.minio.local:9000"
+  secure: true
+  accessKey: "ACCESS_KEY"
+  secretKey: "SECRET_KEY"
+  bucket: "backups"
+  rootDir: "FlowStack/BackupFlow"
+
+backup:
+  include:
+    worlds: ["world", "world_nether", "world_the_end"]
+    plugins: true
+    configs: true
+    extraPaths: []  # Add additional relative paths
+  compression: zip   # zip | gz (tar.gz) | none
+  chunkSizeMB: 32    # reserved for future incremental diff logic
+  retention:
+    enableLifecycle: false   # if true rely on bucket lifecycle rules
+    maxLocalEntries: 10      # how many local manifest records to keep
+  schedule:
+    enabled: true
+    intervalMinutes: 60     # run every X minutes
+    jitterSeconds: 30       # random jitter to avoid sync storms in clusters
+
+restore:
+  allowDirectDownload: true
+  tempDir: "plugins/BackupFlow/work/tmp"
+  restoreDir: "restores"
+
+manifest:
+  storeInBucket: true
+  prefix: "manifests"  # stored under rootDir/manifests/<name>.json
+
+logging:
+  verbose: false
+
+metrics:
+  enabled: true
