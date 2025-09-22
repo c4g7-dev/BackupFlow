@@ -200,6 +200,26 @@ public class BackupFlowPlugin extends JavaPlugin {
             reloadConfig();
             cfg = getConfig();
             initPrefix();
+            // Recreate storage with new config values
+            BackupStorageService old = this.storage;
+            try {
+                this.storage = new BackupStorageService(
+                        cfg.getString("s3.endpoint"),
+                        cfg.getBoolean("s3.secure", true),
+                        cfg.getString("s3.accessKey"),
+                        cfg.getString("s3.secretKey"),
+                        cfg.getString("s3.bucket"),
+                        cfg.getString("s3.rootDir"),
+                        serverId
+                );
+            } catch (Exception ex) {
+                getLogger().severe("Reload: failed to initialize new storage: " + ex.getMessage());
+                if (old != null) this.storage = old; // revert
+                return false;
+            }
+            if (old != null) {
+                try { old.close(); } catch (Exception ignore) {}
+            }
             if (taskId != -1) { Bukkit.getScheduler().cancelTask(taskId); taskId = -1; }
             scheduleAutoBackup();
             refreshTimestampCacheAsync(true);
