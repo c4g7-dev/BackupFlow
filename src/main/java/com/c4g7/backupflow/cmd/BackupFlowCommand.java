@@ -50,8 +50,46 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                             }
                         }
                     }
-                    plugin.restoreBackup(ts, sections, force);
-                    sender.sendMessage("§aRestore initiated for " + ts + (sections.isEmpty()?" (all sections)":" sections=" + sections));
+                    plugin.restoreBackupAsync(ts, sections, force, sender);
+                    sender.sendMessage("§7Restore queued for " + ts + (sections.isEmpty()?" (all sections)":" sections=" + sections));
+                    return true;
+                case "verify":
+                    requireAdmin(sender);
+                    if (args.length < 2) {
+                        sender.sendMessage("§cUsage: /" + label + " verify <timestamp> [--select worlds,plugins,configs,extra]");
+                        return true;
+                    }
+                    String vts = args[1];
+                    java.util.Set<String> vSections = new java.util.LinkedHashSet<>();
+                    for (int i=2;i<args.length;i++) {
+                        if (args[i].equalsIgnoreCase("--select") && i+1 < args.length) {
+                            for (String seg : args[++i].split(",")) {
+                                seg = seg.trim().toLowerCase();
+                                if (!seg.isEmpty()) vSections.add(seg);
+                            }
+                        }
+                    }
+                    sender.sendMessage("§7Verification queued for " + vts + (vSections.isEmpty()?" (all sections)":" sections=" + vSections));
+                    plugin.verifyBackupAsync(vts, vSections, sender);
+                    return true;
+                case "retention":
+                    requireAdmin(sender);
+                    if (args.length >= 2 && args[1].equalsIgnoreCase("plan")) {
+                        Integer keepDays = null; Integer max = null;
+                        for (int i=2;i<args.length;i++) {
+                            if (args[i].equalsIgnoreCase("--keepDays") && i+1<args.length) { keepDays = Integer.parseInt(args[++i]); }
+                            else if (args[i].equalsIgnoreCase("--max") && i+1<args.length) { max = Integer.parseInt(args[++i]); }
+                        }
+                        try {
+                            java.util.List<String> plan = plugin.retentionPlan(keepDays, max);
+                            sender.sendMessage("§eRetention plan (" + plan.size() + "):");
+                            for (int pi=0; pi<plan.size(); pi++) sender.sendMessage("§7 - " + plan.get(pi));
+                        } catch (Exception ex) {
+                            sender.sendMessage("§cRetention plan failed: " + ex.getMessage());
+                        }
+                        return true;
+                    }
+                    sender.sendMessage("§cUsage: /" + label + " retention plan [--keepDays N] [--max N]");
                     return true;
                 case "list":
                     var list = plugin.getStorage().listBackups("full");
@@ -92,7 +130,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
             String a = args[0].toLowerCase();
-            for (String opt : List.of("help","backup","list","restore","manifests","version")) {
+            for (String opt : List.of("help","backup","list","restore","verify","retention","manifests","version")) {
                 if (opt.startsWith(a)) out.add(opt);
             }
         } else if (args.length == 2 && args[0].equalsIgnoreCase("restore")) {

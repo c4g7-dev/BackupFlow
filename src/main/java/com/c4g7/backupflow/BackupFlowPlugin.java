@@ -192,28 +192,137 @@ public class BackupFlowPlugin extends JavaPlugin {
 
     public BackupStorageService getStorage() { return storage; }
 
-    public void restoreBackup(String timestamp, java.util.Set<String> sections, boolean force) throws Exception {
-        // Download archive for timestamp
-        // Currently only one file per backup (full-<ts>.zip) assumed
+    public void restoreBackupAsync(String timestamp, java.util.Set<String> sections, boolean force, org.bukkit.command.CommandSender sender) {
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                doRestore(timestamp, sections, force);
+                sender.sendMessage("§aRestore complete for " + timestamp);
+            } catch (Exception ex) {
+                sender.sendMessage("§cRestore failed: " + ex.getMessage());
+                getLogger().warning("Restore failed: " + ex.getMessage());
+            }
+        });
+    }
+
+    private void doRestore(String timestamp, java.util.Set<String> sections, boolean force) throws Exception {
         String keyPrefix = storage.beginFullBackupKeyPrefix(Instant.ofEpochMilli(Long.parseLong(timestamp)));
-        // We list backups already externally; construct expected object name
         String archiveNameZip = "full-" + timestamp + ".zip";
         java.nio.file.Path tempRoot = ensureTemp();
         java.nio.file.Path dl = tempRoot.resolve(archiveNameZip);
         storage.downloadFile(keyPrefix + archiveNameZip, dl);
         java.nio.file.Path extractDir = java.nio.file.Files.createTempDirectory(tempRoot, "bf-restore-");
         com.c4g7.backupflow.util.ZipExtractUtils.extractFiltered(dl, extractDir, com.c4g7.backupflow.util.ZipExtractUtils.buildSelector(sections));
-        // Copy extracted content to server root (simple strategy; future: selective merges)
         java.nio.file.Files.walk(extractDir).forEach(p -> {
             try {
                 if (java.nio.file.Files.isDirectory(p)) return;
                 java.nio.file.Path rel = extractDir.relativize(p);
                 java.nio.file.Path target = java.nio.file.Path.of(".").resolve(rel.toString());
-                if (!force && java.nio.file.Files.exists(target)) return; // skip existing unless forced
+                if (!force && java.nio.file.Files.exists(target)) return;
                 java.nio.file.Files.createDirectories(target.getParent());
                 java.nio.file.Files.copy(p, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             } catch (Exception ignored) { }
         });
-        getLogger().info("Restore complete for timestamp=" + timestamp);
+    }
+
+    public void verifyBackupAsync(String timestamp, java.util.Set<String> sections, org.bukkit.command.CommandSender sender) {
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var result = doVerify(timestamp, sections);
+                sender.sendMessage("§eVerification: files=" + result.total + " ok=" + result.matched + " mismatched=" + result.mismatched + " missing=" + result.missing);
+                if (!result.problems.isEmpty()) {
+                    sender.sendMessage("§cProblem samples: " + String.join(", ", result.problems.stream().limit(10).toList()));
+                }
+            } catch (Exception ex) {
+                sender.sendMessage("§cVerify failed: " + ex.getMessage());
+            }
+        });
+    }
+
+    private static final class VerifyStats { int total; int matched; int mismatched; int missing; java.util.List<String> problems = new java.util.ArrayList<>(); }
+
+    private VerifyStats doVerify(String timestamp, java.util.Set<String> sections) throws Exception {
+        String keyPrefix = storage.beginFullBackupKeyPrefix(Instant.ofEpochMilli(Long.parseLong(timestamp)));
+        String archiveNameZip = "full-" + timestamp + ".zip";
+        java.nio.file.Path tempRoot = ensureTemp();
+        java.nio.file.Path dl = tempRoot.resolve(archiveNameZip);
+        storage.downloadFile(keyPrefix + archiveNameZip, dl);
+        // Download manifest if present
+        java.util.List<String> manifests = storage.listManifests();
+        String manifestForTs = null;
+        for (String m : manifests) if (m.contains(timestamp)) { manifestForTs = m; break; }
+        java.util.Map<String,String> hashes = new java.util.HashMap<>();
+        if (manifestForTs != null) {
+            java.nio.file.Path mf = tempRoot.resolve(manifestForTs);
+            storage.downloadFile(storage.manifestObjectName(manifestForTs), mf);
+            String json = java.nio.file.Files.readString(mf);
+            int idx = json.indexOf("\"hashes\":");
+            if (idx >= 0) {
+                // naive parse: {"hashes":{"path":"hex",...}}
+                String sub = json.substring(idx);
+                int open = sub.indexOf('{');
+                int close = sub.indexOf('}');
+                if (open >=0 && close>open) {
+                    String body = sub.substring(open+1, close);
+                    for (String pair : body.split(",")) {
+                        int c = pair.indexOf(':');
+                        if (c>0) {
+                            String k = pair.substring(0,c).replace("\"","" ).trim();
+                            String v = pair.substring(c+1).replace("\"","" ).trim();
+                            if (!k.isEmpty() && !v.isEmpty()) hashes.put(k, v);
+                        }
+                    }
+                }
+            }
+        }
+        VerifyStats stats = new VerifyStats();
+        java.util.function.Predicate<String> selector = com.c4g7.backupflow.util.ZipExtractUtils.buildSelector(sections);
+        try (java.io.InputStream in = java.nio.file.Files.newInputStream(dl); java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(in)) {
+            java.util.zip.ZipEntry e;
+            while ((e = zis.getNextEntry()) != null) {
+                if (e.isDirectory()) continue;
+                String name = e.getName();
+                if (!selector.test(name)) continue;
+                stats.total++;
+                if (hashes.isEmpty()) continue; // nothing to compare
+                if (!hashes.containsKey(name)) { stats.missing++; stats.problems.add("not-in-manifest:"+name); continue; }
+                // compute hash
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] buf = new byte[8192]; int r;
+                while ((r = zis.read(buf)) != -1) md.update(buf,0,r);
+                String calc = toHex(md.digest());
+                String expected = hashes.get(name);
+                if (expected.equalsIgnoreCase(calc)) stats.matched++; else { stats.mismatched++; stats.problems.add("mismatch:"+name); }
+            }
+        } catch (Exception ex) { throw ex; }
+        return stats;
+    }
+
+    private String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length*2);
+        for (byte b: bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    public java.util.List<String> retentionPlan(Integer keepDays, Integer max) throws Exception {
+        java.util.List<String> all = storage.listBackups("full");
+        java.util.List<String> sorted = new java.util.ArrayList<>(all);
+        sorted.sort(String::compareTo);
+        long now = System.currentTimeMillis();
+        java.util.List<String> candidates = new java.util.ArrayList<>();
+        for (String ts : sorted) {
+            try {
+                long t = Long.parseLong(ts);
+                boolean old = (keepDays != null && keepDays > 0 && now - t > keepDays*86400000L);
+                candidates.add((old?"old:" : "") + ts);
+            } catch (NumberFormatException ignored) { }
+        }
+        if (max != null && max > 0 && sorted.size() > max) {
+            int removeCount = sorted.size() - max;
+            for (int i=0;i<removeCount && i<sorted.size();i++) {
+                String ts = sorted.get(i);
+                if (!candidates.contains(ts)) candidates.add("excess:"+ts);
+            }
+        }
+        return candidates;
     }
 }
