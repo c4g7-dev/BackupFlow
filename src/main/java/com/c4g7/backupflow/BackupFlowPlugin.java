@@ -85,11 +85,17 @@ public class BackupFlowPlugin extends JavaPlugin {
         Path buildDir = Files.createTempDirectory(tempRoot, "bf-build-");
         try {
             collectSources(buildDir);
-            Path archive = com.c4g7.backupflow.util.CompressionUtils.compress(buildDir, cfg.getString("backup.compression", "zip"));
+            boolean wantHashes = cfg.getBoolean("integrity.hashes", true);
+            var comp = com.c4g7.backupflow.util.CompressionUtils.compress(buildDir, cfg.getString("backup.compression", "zip"), wantHashes);
             String fileName = "full-" + ts.toEpochMilli() + "." + (cfg.getString("backup.compression", "zip").equalsIgnoreCase("gz") ? "tar.gz" : "zip");
-            storage.uploadFile(archive, prefix + fileName);
+            storage.uploadFile(comp.archive, prefix + fileName);
             if (cfg.getBoolean("manifest.storeInBucket", true)) {
-                Path manifest = com.c4g7.backupflow.util.ManifestBuilder.writeSimpleManifest(tempRoot, storage.randomManifestName(ts), reason, serverId, List.of(fileName));
+                Path manifest;
+                if (wantHashes && comp.hashes != null && !comp.hashes.isEmpty()) {
+                    manifest = com.c4g7.backupflow.util.ManifestBuilder.writeManifestWithHashes(tempRoot, storage.randomManifestName(ts), reason, serverId, List.of(fileName), comp.hashes);
+                } else {
+                    manifest = com.c4g7.backupflow.util.ManifestBuilder.writeSimpleManifest(tempRoot, storage.randomManifestName(ts), reason, serverId, List.of(fileName));
+                }
                 storage.uploadFile(manifest, storage.manifestObjectName(manifest.getFileName().toString()));
             }
             getLogger().info("Backup complete: " + fileName + " (reason=" + reason + ")");
@@ -185,4 +191,29 @@ public class BackupFlowPlugin extends JavaPlugin {
     }
 
     public BackupStorageService getStorage() { return storage; }
+
+    public void restoreBackup(String timestamp, java.util.Set<String> sections, boolean force) throws Exception {
+        // Download archive for timestamp
+        // Currently only one file per backup (full-<ts>.zip) assumed
+        String keyPrefix = storage.beginFullBackupKeyPrefix(Instant.ofEpochMilli(Long.parseLong(timestamp)));
+        // We list backups already externally; construct expected object name
+        String archiveNameZip = "full-" + timestamp + ".zip";
+        java.nio.file.Path tempRoot = ensureTemp();
+        java.nio.file.Path dl = tempRoot.resolve(archiveNameZip);
+        storage.downloadFile(keyPrefix + archiveNameZip, dl);
+        java.nio.file.Path extractDir = java.nio.file.Files.createTempDirectory(tempRoot, "bf-restore-");
+        com.c4g7.backupflow.util.ZipExtractUtils.extractFiltered(dl, extractDir, com.c4g7.backupflow.util.ZipExtractUtils.buildSelector(sections));
+        // Copy extracted content to server root (simple strategy; future: selective merges)
+        java.nio.file.Files.walk(extractDir).forEach(p -> {
+            try {
+                if (java.nio.file.Files.isDirectory(p)) return;
+                java.nio.file.Path rel = extractDir.relativize(p);
+                java.nio.file.Path target = java.nio.file.Path.of(".").resolve(rel.toString());
+                if (!force && java.nio.file.Files.exists(target)) return; // skip existing unless forced
+                java.nio.file.Files.createDirectories(target.getParent());
+                java.nio.file.Files.copy(p, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (Exception ignored) { }
+        });
+        getLogger().info("Restore complete for timestamp=" + timestamp);
+    }
 }

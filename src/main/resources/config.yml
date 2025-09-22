@@ -35,6 +35,9 @@ manifest:
   storeInBucket: true
   prefix: "manifests"  # stored under rootDir/manifests/<name>.json
 
+integrity:
+  hashes: true   # if true include per-file SHA-256 hashes in manifest for verification
+
 logging:
   verbose: false
 

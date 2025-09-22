@@ -30,6 +30,29 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     plugin.runBackup("manual");
                     sender.sendMessage("§aBackup started.");
                     return true;
+                case "restore":
+                    requireAdmin(sender);
+                    if (args.length < 2) {
+                        sender.sendMessage("§cUsage: /" + label + " restore <timestamp> [--select worlds,plugins,configs,extra] [--force]");
+                        return true;
+                    }
+                    String ts = args[1];
+                    java.util.Set<String> sections = new java.util.LinkedHashSet<>();
+                    boolean force = false;
+                    for (int i=2;i<args.length;i++) {
+                        String part = args[i];
+                        if (part.equalsIgnoreCase("--force")) { force = true; continue; }
+                        if (part.equalsIgnoreCase("--select") && i+1 < args.length) {
+                            String list = args[++i];
+                            for (String seg : list.split(",")) {
+                                seg = seg.trim().toLowerCase();
+                                if (!seg.isEmpty()) sections.add(seg);
+                            }
+                        }
+                    }
+                    plugin.restoreBackup(ts, sections, force);
+                    sender.sendMessage("§aRestore initiated for " + ts + (sections.isEmpty()?" (all sections)":" sections=" + sections));
+                    return true;
                 case "list":
                     var list = plugin.getStorage().listBackups("full");
                     sender.sendMessage("§eFull Backups (" + list.size() + "): " + list);
@@ -58,7 +81,8 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
     private void sendHelp(CommandSender s) {
         s.sendMessage("§b§lBackupFlow Commands:");
         s.sendMessage("§f/backupflow backup §7- run full backup");
-        s.sendMessage("§f/backupflow list §7- list backup timestamps");
+    s.sendMessage("§f/backupflow list §7- list backup timestamps");
+    s.sendMessage("§f/backupflow restore <ts> [--select worlds,plugins,...] [--force] §7- restore backup");
         s.sendMessage("§f/backupflow manifests §7- list manifest files");
         s.sendMessage("§f/backupflow version §7- show plugin version");
     }
@@ -68,7 +92,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
             String a = args[0].toLowerCase();
-            for (String opt : List.of("help","backup","list","manifests","version")) {
+            for (String opt : List.of("help","backup","list","restore","manifests","version")) {
                 if (opt.startsWith(a)) out.add(opt);
             }
         } else if (args.length == 2 && args[0].equalsIgnoreCase("restore")) {
