@@ -2,6 +2,8 @@
 
 Cloud‑native, incremental-ready backup system for Minecraft Paper/Purpur 1.21+. Push compressed world + plugin snapshots directly to S3/MinIO (or any S3-compatible storage). Designed for multi-server fleets, containerized deployments, and hands-off reliability.
 
+Now includes: selective section restore, async restore & verify, integrity hash manifest (SHA‑256), retention planning preview.
+
 [![License](https://img.shields.io/github/license/c4g7-dev/SchemFlow?style=for-the-badge)](../SchemFlow/LICENSE)
 [![Java](https://img.shields.io/badge/Java-21-orange?style=for-the-badge&logo=openjdk)](https://openjdk.org/)
 [![Paper](https://img.shields.io/badge/Paper-1.21+-00ADD8?style=for-the-badge&logo=minecraft)](https://papermc.io/)
@@ -25,17 +27,22 @@ BackupFlow centralizes automated world + config + plugin backups in object stora
 - Wildcard include: use `*` to auto-detect all worlds (folders with level.dat) and implicitly include plugins + configs when explicit lists are omitted
 - ZIP compression (tar.gz planned)
 - Randomized jitter scheduling to avoid cluster spikes
+- Integrity hash manifest (SHA-256 per file) optional
+- Selective section restore & verify (`--select worlds,plugins,configs,extra`)
+- Async restore & verify (non-blocking main thread)
+- Retention plan preview (`/backupflow retention plan`)
 - Manifests stored alongside backups (JSON)
 - S3/MinIO layout under configurable `rootDir`
 - Multi-server isolation via `serverId`
 - Manual + scheduled backups
-- Basic listing of backups + manifests
+- Listing of backups + manifests
 
 Planned / Roadmap:
 - Incremental/chunk-based deduplication (content addressing)
 - Automatic lifecycle pruning (client + bucket policy synergy)
-- Integrity hash manifest (SHA-256 map)
-- Selective restore (single world / plugin folder)
+- Tar.gz option
+- Active prune executor using retention rules
+- Partial differential world chunk mode
 
 ---
 ## Storage Layout
@@ -66,11 +73,14 @@ Example manifest (simplified):
 ---
 ## Quick Start Commands
 ```
-/backupflow help         # list commands
-/backupflow backup       # run a full backup now
-/backupflow list         # list backup timestamps
-/backupflow manifests    # list manifest objects
-/backupflow version      # show plugin version
+/backupflow help                       # list commands
+/backupflow backup                     # run a full backup now
+/backupflow list                       # list backup timestamps (epoch millis)
+/backupflow manifests                  # list manifest objects
+/backupflow restore <ts> [--select ...] [--force]  # async selective restore
+/backupflow verify <ts> [--select ...]             # async integrity verify (if hashes present)
+/backupflow retention plan [--keepDays N] [--max N]# preview retention effects
+/backupflow version                    # show plugin version
 ```
 
 ---
@@ -103,12 +113,15 @@ backup:
 
 restore:
   allowDirectDownload: true
-  tempDir: "plugins/BackupFlow/work/tmp"
-  restoreDir: "restores"
+  tempDir: "plugins/BackupFlow/work/tmp"   # shared temp workspace (download/extract)
+  restoreDir: "restores"                   # (future) staging area for advanced flows
 
 manifest:
   storeInBucket: true
   prefix: "manifests"
+
+integrity:
+  hashes: true   # embed per-file SHA-256 hash map inside manifest when true
 ```
 
 ---
