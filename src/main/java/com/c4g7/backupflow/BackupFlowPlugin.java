@@ -17,6 +17,10 @@ public class BackupFlowPlugin extends JavaPlugin {
     private String serverId;
     private volatile boolean backupRunning = false;
     private String prefix;
+    private long lastBackupStart = 0L;
+    private long lastBackupEnd = 0L;
+    private java.util.List<String> cachedTimestamps = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private long lastTimestampCacheAt = 0L;
 
     @Override
     public void onEnable() {
@@ -39,8 +43,8 @@ public class BackupFlowPlugin extends JavaPlugin {
             return;
         }
         registerCommands();
-        scheduleAutoBackup();
         initPrefix();
+        scheduleAutoBackup();
         listOnStartup();
         getLogger().info("BackupFlow enabled. ServerId=" + serverId);
     }
@@ -64,8 +68,12 @@ public class BackupFlowPlugin extends JavaPlugin {
     }
 
     private void initPrefix() {
-        // Blue gradient style similar concept to SchemFlow but blue tones
-        this.prefix = "§b§lB§3§lF§r§7 » §r"; // BackupFlow => BF style
+        boolean color = getConfig().getBoolean("color.enabled", true);
+        if (color) {
+            this.prefix = "§b§lB§3§lF§r§7 » §r"; // colored
+        } else {
+            this.prefix = "[BackupFlow] ";
+        }
     }
 
     public String pref() { return prefix; }
@@ -108,6 +116,7 @@ public class BackupFlowPlugin extends JavaPlugin {
 
     public void runBackup(String reason) throws Exception {
         Instant ts = Instant.now();
+        lastBackupStart = System.currentTimeMillis();
         String prefix = storage.beginFullBackupKeyPrefix(ts);
         Path tempRoot = ensureTemp();
         Path buildDir = Files.createTempDirectory(tempRoot, "bf-build-");
@@ -126,7 +135,10 @@ public class BackupFlowPlugin extends JavaPlugin {
                 }
                 storage.uploadFile(manifest, storage.manifestObjectName(manifest.getFileName().toString()));
             }
-            getLogger().info("Backup complete: " + fileName + " (reason=" + reason + ")");
+            lastBackupEnd = System.currentTimeMillis();
+            getLogger().info("Backup complete: " + fileName + " (reason=" + reason + ") took " + (lastBackupEnd - lastBackupStart) + "ms");
+            // refresh timestamp cache in background
+            refreshTimestampCacheAsync(true);
         } finally {
             com.c4g7.backupflow.util.FileUtils.deleteQuietly(buildDir);
         }
@@ -153,6 +165,50 @@ public class BackupFlowPlugin extends JavaPlugin {
     }
 
     public boolean isBackupRunning() { return backupRunning; }
+
+    public long getLastBackupDuration() { return lastBackupEnd > lastBackupStart ? (lastBackupEnd - lastBackupStart) : 0L; }
+    public long getLastBackupEnd() { return lastBackupEnd; }
+
+    public java.util.List<String> getCachedTimestamps() {
+        int ttl = getConfig().getInt("timestampCacheSeconds", 60);
+        long now = System.currentTimeMillis();
+        if (ttl <= 0 || (now - lastTimestampCacheAt) > ttl * 1000L) {
+            refreshTimestampCacheAsync(false);
+        }
+        return cachedTimestamps;
+    }
+
+    public void refreshTimestampCacheAsync(boolean force) {
+        int ttl = getConfig().getInt("timestampCacheSeconds", 60);
+        long now = System.currentTimeMillis();
+        if (!force && ttl > 0 && (now - lastTimestampCacheAt) < ttl * 1000L) return;
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                var list = storage.listBackups("full");
+                list.sort(String::compareTo);
+                cachedTimestamps.clear();
+                cachedTimestamps.addAll(list);
+                lastTimestampCacheAt = System.currentTimeMillis();
+            } catch (Exception ex) {
+                getLogger().warning("Timestamp cache refresh failed: " + ex.getMessage());
+            }
+        });
+    }
+
+    public boolean reloadBackupFlowConfig() {
+        try {
+            reloadConfig();
+            cfg = getConfig();
+            initPrefix();
+            if (taskId != -1) { Bukkit.getScheduler().cancelTask(taskId); taskId = -1; }
+            scheduleAutoBackup();
+            refreshTimestampCacheAsync(true);
+            return true;
+        } catch (Exception e) {
+            getLogger().warning("Reload failed: " + e.getMessage());
+            return false;
+        }
+    }
 
     private void collectSources(Path buildDir) throws IOException {
         // Determine effective sections based on wildcard rules

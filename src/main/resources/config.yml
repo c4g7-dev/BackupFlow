@@ -46,3 +46,10 @@ metrics:
 
 # List existing backups at startup (counts only)
 autoListOnStart: true
+
+# Toggle colored prefix output (set false for plain logs/console)
+color:
+  enabled: true
+
+# Cache backup timestamp list for tab completion (seconds, 0=disable cache)
+timestampCacheSeconds: 60

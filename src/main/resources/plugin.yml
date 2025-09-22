@@ -34,3 +34,9 @@ permissions:
   backupflow.version:
     description: View plugin version
     default: true
+  backupflow.status:
+    description: View backup status and metrics
+    default: true
+  backupflow.reload:
+    description: Reload BackupFlow configuration
+    default: op

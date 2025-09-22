@@ -109,6 +109,20 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     require(sender, "backupflow.version");
                     sender.sendMessage(plugin.pref() + "§fBackupFlow §b" + plugin.getDescription().getVersion());
                     return true;
+                case "status":
+                    require(sender, "backupflow.status");
+                    sender.sendMessage(plugin.pref() + (plugin.isBackupRunning()?"§eBackup: RUNNING":"§aBackup: IDLE"));
+                    long dur = plugin.getLastBackupDuration();
+                    if (dur > 0) sender.sendMessage("§7Last duration: §f" + dur + "ms");
+                    long end = plugin.getLastBackupEnd();
+                    if (end > 0) sender.sendMessage("§7Last finished: §f" + end);
+                    sender.sendMessage("§7Cached timestamps: §f" + plugin.getCachedTimestamps().size());
+                    return true;
+                case "reload":
+                    require(sender, "backupflow.reload");
+                    boolean ok = plugin.reloadBackupFlowConfig();
+                    sender.sendMessage(plugin.pref() + (ok?"§aReload complete":"§cReload failed – check console"));
+                    return true;
                 default:
                     sender.sendMessage(plugin.pref() + "§cUnknown subcommand. /" + label + " help");
                     return true;
@@ -141,16 +155,30 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
             String a = args[0].toLowerCase();
-            for (String opt : List.of("help","backup","list","restore","verify","retention","manifests","version")) {
+            for (String opt : List.of("help","backup","list","restore","verify","retention","manifests","version","status","reload")) {
                 if (opt.startsWith(a)) out.add(opt);
             }
         } else if (args.length == 2 && (args[0].equalsIgnoreCase("restore") || args[0].equalsIgnoreCase("verify"))) {
-            try { for (String ts : plugin.getStorage().listBackups("full")) if (ts.startsWith(args[1])) out.add(ts); } catch (Exception ignored) { }
+            try { for (String ts : plugin.getCachedTimestamps()) if (ts.startsWith(args[1])) out.add(ts); } catch (Exception ignored) { }
         } else if (args[0].equalsIgnoreCase("restore") || args[0].equalsIgnoreCase("verify")) {
             // suggest flags
             String last = args[args.length-1].toLowerCase();
             for (String opt : List.of("--select","--force")) {
                 if (opt.startsWith(last)) out.add(opt);
+            }
+            // after --select provide section suggestions
+            for (int i=0;i<args.length;i++) {
+                if (args[i].equalsIgnoreCase("--select") && i+1 < args.length) {
+                    String seg = args[i+1];
+                    // partial list (comma separated)
+                    String[] parts = seg.split(",");
+                    String current = parts[parts.length-1].toLowerCase();
+                    for (String section : List.of("worlds","plugins","configs","extra")) {
+                        if (section.startsWith(current) && !seg.contains(section)) {
+                            out.add(section);
+                        }
+                    }
+                }
             }
         } else if (args[0].equalsIgnoreCase("retention") && args.length >=2 ) {
             if (args.length == 2) {
