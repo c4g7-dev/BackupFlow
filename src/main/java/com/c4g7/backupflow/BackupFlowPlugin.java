@@ -21,6 +21,9 @@ public class BackupFlowPlugin extends JavaPlugin {
     private long lastBackupEnd = 0L;
     private java.util.List<String> cachedTimestamps = new java.util.concurrent.CopyOnWriteArrayList<>();
     private long lastTimestampCacheAt = 0L;
+    private volatile String lastError = null;
+    private net.kyori.adventure.text.minimessage.MiniMessage miniMessage;
+    private net.kyori.adventure.platform.bukkit.BukkitAudiences audiences;
 
     @Override
     public void onEnable() {
@@ -42,8 +45,11 @@ public class BackupFlowPlugin extends JavaPlugin {
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
-        registerCommands();
+        try { storage.createRoot(); } catch (Exception ignored) {}
+        audiences = net.kyori.adventure.platform.bukkit.BukkitAudiences.create(this);
+        miniMessage = net.kyori.adventure.text.minimessage.MiniMessage.miniMessage();
         initPrefix();
+        registerCommands();
         scheduleAutoBackup();
         listOnStartup();
         getLogger().info("BackupFlow enabled. ServerId=" + serverId);
@@ -53,6 +59,7 @@ public class BackupFlowPlugin extends JavaPlugin {
     public void onDisable() {
         if (taskId != -1) Bukkit.getScheduler().cancelTask(taskId);
         if (storage != null) storage.close();
+        if (audiences != null) audiences.close();
     }
 
     private String detectServerId() {
@@ -69,10 +76,15 @@ public class BackupFlowPlugin extends JavaPlugin {
 
     private void initPrefix() {
         boolean color = getConfig().getBoolean("color.enabled", true);
-        if (color) {
-            this.prefix = "§b§lB§3§lF§r§7 » §r"; // colored
-        } else {
-            this.prefix = "[BackupFlow] ";
+        if (!color) { this.prefix = "[BackupFlow] "; return; }
+        // Build MiniMessage gradient similar style
+        String mm = "<gradient:#4fc3f7:#0288d1><bold>BF</bold></gradient> <gray>» </gray>";
+        // Convert to legacy once for performance
+        try {
+            var comp = miniMessage.deserialize(mm);
+            this.prefix = net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().serialize(comp);
+        } catch (Exception e) {
+            this.prefix = "§b§lB§3§lF§7 » §r";
         }
     }
 
@@ -146,19 +158,23 @@ public class BackupFlowPlugin extends JavaPlugin {
 
     public boolean startBackupAsync(String reason, org.bukkit.command.CommandSender initiator) {
         if (backupRunning) {
-            if (initiator != null) initiator.sendMessage("§cBackup already running");
+            if (initiator != null) initiator.sendMessage(pref() + "§cBackup already running");
             return false;
         }
-        backupRunning = true;
         Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            boolean started = false;
             try {
+                // Only mark running once build dir is actually created
+                backupRunning = true; started = true;
+                if (initiator != null) initiator.sendMessage(pref() + "§7Backup started...");
                 runBackup(reason);
-                if (initiator != null) initiator.sendMessage("§aBackup completed.");
+                if (initiator != null) initiator.sendMessage(pref() + "§aBackup completed in §f" + getLastBackupDuration() + "ms");
             } catch (Exception ex) {
-                getLogger().warning("Backup failed: " + ex.getMessage());
-                if (initiator != null) initiator.sendMessage("§cBackup failed: " + ex.getMessage());
+                lastError = ex.getMessage();
+                getLogger().warning("Backup failed (endpoint=" + cfg.getString("s3.endpoint") + ", bucket=" + cfg.getString("s3.bucket") + "): " + ex.getMessage());
+                if (initiator != null) initiator.sendMessage(pref() + "§cBackup failed: " + ex.getMessage());
             } finally {
-                backupRunning = false;
+                if (started) backupRunning = false;
             }
         });
         return true;
@@ -190,7 +206,8 @@ public class BackupFlowPlugin extends JavaPlugin {
                 cachedTimestamps.addAll(list);
                 lastTimestampCacheAt = System.currentTimeMillis();
             } catch (Exception ex) {
-                getLogger().warning("Timestamp cache refresh failed: " + ex.getMessage());
+                lastError = ex.getMessage();
+                getLogger().warning("Timestamp cache refresh failed (endpoint=" + cfg.getString("s3.endpoint") + ", bucket=" + cfg.getString("s3.bucket") + "): " + ex.getMessage());
             }
         });
     }
@@ -212,6 +229,7 @@ public class BackupFlowPlugin extends JavaPlugin {
                         cfg.getString("s3.rootDir"),
                         serverId
                 );
+                try { this.storage.createRoot(); } catch (Exception ignored) {}
             } catch (Exception ex) {
                 getLogger().severe("Reload: failed to initialize new storage: " + ex.getMessage());
                 if (old != null) this.storage = old; // revert

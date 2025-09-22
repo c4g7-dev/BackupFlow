@@ -108,6 +108,18 @@ public class BackupStorageService implements AutoCloseable {
         return serverId + "-" + ts.toEpochMilli() + "-" + UUID.randomUUID().toString().substring(0,8) + ".json";
     }
 
+    public void createRoot() {
+        // Put a tiny marker to validate credentials and root path; ignore failures
+        try (InputStream in = new java.io.ByteArrayInputStream(new byte[]{0})) {
+            client.putObject(PutObjectArgs.builder()
+                    .bucket(bucket)
+                    .object(rootDir + "/.init")
+                    .stream(in, 1, -1)
+                    .contentType("application/octet-stream")
+                    .build());
+        } catch (Exception ignored) { }
+    }
+
     @Override
     public void close() { }
 }

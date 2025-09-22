@@ -109,6 +109,18 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     require(sender, "backupflow.version");
                     sender.sendMessage(plugin.pref() + "§fBackupFlow §b" + plugin.getDescription().getVersion());
                     return true;
+                case "diag":
+                    require(sender, "backupflow.diag");
+                    sender.sendMessage(plugin.pref() + "§bDiagnostics:");
+                    org.bukkit.configuration.file.FileConfiguration c = plugin.getConfig();
+                    sender.sendMessage("§7Endpoint: §f" + c.getString("s3.endpoint"));
+                    sender.sendMessage("§7Bucket: §f" + c.getString("s3.bucket"));
+                    sender.sendMessage("§7RootDir: §f" + c.getString("s3.rootDir"));
+                    sender.sendMessage("§7ServerId: §f" + plugin.getDescription().getName() + ":" + plugin.getName());
+                    sender.sendMessage("§7Backups cached: §f" + plugin.getCachedTimestamps().size());
+                    try { sender.sendMessage("§7Running: §f" + plugin.isBackupRunning()); } catch (Exception ignored) {}
+                    try { java.lang.reflect.Field f = plugin.getClass().getDeclaredField("lastError"); f.setAccessible(true); Object le = f.get(plugin); if (le != null) sender.sendMessage("§7LastError: §c" + le); } catch (Exception ignored) {}
+                    return true;
                 case "status":
                     require(sender, "backupflow.status");
                     sender.sendMessage(plugin.pref() + (plugin.isBackupRunning()?"§eBackup: RUNNING":"§aBackup: IDLE"));

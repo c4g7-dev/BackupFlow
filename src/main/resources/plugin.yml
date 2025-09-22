@@ -40,3 +40,6 @@ permissions:
   backupflow.reload:
     description: Reload BackupFlow configuration
     default: op
+  backupflow.diag:
+    description: Diagnostic information command
+    default: op
