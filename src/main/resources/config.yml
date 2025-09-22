@@ -21,6 +21,9 @@ backup:
   retention:
     enableLifecycle: false   # if true rely on bucket lifecycle rules
     maxLocalEntries: 10      # how many local manifest records to keep
+  hardTimeoutSeconds: 600    # watchdog hard timeout for a single full backup (0=disable)
+  phaseStaleSeconds: 300     # warn if a phase (e.g., COLLECT) exceeds this without progress (0=disable)
+  skipUnchanged: true        # skip backup if no files changed since last backup (based on content hash)
   schedule:
     enabled: true
     intervalMinutes: 60     # run every X minutes

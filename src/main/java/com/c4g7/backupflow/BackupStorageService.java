@@ -53,11 +53,12 @@ public class BackupStorageService implements AutoCloseable {
     }
 
     public void uploadFile(Path file, String objectName) throws Exception {
-        try (InputStream in = Files.newInputStream(file)) {
+        long fileSize = Files.size(file);
+        try (InputStream in = new java.io.BufferedInputStream(Files.newInputStream(file), 1024 * 1024)) { // 1MB buffer
             client.putObject(PutObjectArgs.builder()
                     .bucket(bucket)
                     .object(objectName)
-                    .stream(in, Files.size(file), -1)
+                    .stream(in, fileSize, 10 * 1024 * 1024) // 10MB part size for multipart
                     .contentType("application/octet-stream")
                     .build());
         }

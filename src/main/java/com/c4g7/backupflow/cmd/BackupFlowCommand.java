@@ -5,9 +5,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
-import org.bukkit.entity.Player;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -107,7 +105,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     return true;
                 case "version":
                     require(sender, "backupflow.version");
-                    sender.sendMessage(plugin.pref() + "§fBackupFlow §b" + plugin.getDescription().getVersion());
+                    sender.sendMessage(plugin.pref() + "§fBackupFlow §b" + plugin.getPluginMeta().getVersion());
                     return true;
                 case "diag":
                     require(sender, "backupflow.diag");
@@ -116,19 +114,65 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage("§7Endpoint: §f" + c.getString("s3.endpoint"));
                     sender.sendMessage("§7Bucket: §f" + c.getString("s3.bucket"));
                     sender.sendMessage("§7RootDir: §f" + c.getString("s3.rootDir"));
-                    sender.sendMessage("§7ServerId: §f" + plugin.getDescription().getName() + ":" + plugin.getName());
+                    sender.sendMessage("§7ServerId: §f" + plugin.getServerIdValue());
                     sender.sendMessage("§7Backups cached: §f" + plugin.getCachedTimestamps().size());
-                    try { sender.sendMessage("§7Running: §f" + plugin.isBackupRunning()); } catch (Exception ignored) {}
-                    try { java.lang.reflect.Field f = plugin.getClass().getDeclaredField("lastError"); f.setAccessible(true); Object le = f.get(plugin); if (le != null) sender.sendMessage("§7LastError: §c" + le); } catch (Exception ignored) {}
+                    sender.sendMessage("§7Running: §f" + plugin.isBackupRunning() + (plugin.isCancelRequested()?" §8(cancel requested)":""));
+                    sender.sendMessage("§7Phase: §f" + plugin.getLastPhase());
+                    long age = System.currentTimeMillis() - plugin.getLastPhaseAt();
+                    sender.sendMessage("§7PhaseAgeMs: §f" + age);
+                    sender.sendMessage("§7ThreadAlive: §f" + plugin.isBackupThreadAlive());
+                    sender.sendMessage("§7FilesCopied: §f" + plugin.getFilesCopiedThisRun());
+                    sender.sendMessage("§7BytesCopied: §f" + plugin.getBytesCopiedThisRun());
+                    if (plugin.getTotalBytesPlanned() > 0) {
+                        sender.sendMessage("§7PlannedFiles: §f" + plugin.getTotalFilesPlanned() + " §7PlannedBytes: §f" + plugin.getTotalBytesPlanned());
+                        double pct = plugin.getPercentComplete();
+                        if (pct >= 0) sender.sendMessage("§7Progress: §f" + String.format("%.2f", pct) + "%");
+                        double thr = plugin.getThroughputBytesPerSec();
+                        if (thr > 0) sender.sendMessage("§7Throughput: §f" + String.format("%.2f", thr/1024/1024) + " MB/s");
+                        long eta = plugin.getEtaSeconds();
+                        if (eta >= 0) sender.sendMessage("§7ETA: §f" + eta + "s");
+                        var bd = plugin.getPlanBreakdown();
+                        if (bd != null && !bd.isEmpty()) {
+                            sender.sendMessage("§7Breakdown: §f" + bd.size() + " roots");
+                            int shown = 0;
+                            for (var e : bd.entrySet()) {
+                                sender.sendMessage("§8 - §7" + e.getKey() + " §f" + e.getValue());
+                                if (++shown >= 10) { if (bd.size() > shown) sender.sendMessage("§8   (" + (bd.size()-shown) + " more)"); break; }
+                            }
+                        }
+                    }
+                    long lpAge = System.currentTimeMillis() - plugin.getLastProgressAt();
+                    if (plugin.isBackupRunning()) sender.sendMessage("§7LastProgressMs: §f" + lpAge);
+                    if (plugin.getLastError() != null) sender.sendMessage("§7LastError: §c" + plugin.getLastError());
+                    sender.sendMessage("§7Timeout(s): §f" + c.getLong("backup.hardTimeoutSeconds", 600L));
                     return true;
                 case "status":
                     require(sender, "backupflow.status");
-                    sender.sendMessage(plugin.pref() + (plugin.isBackupRunning()?"§eBackup: RUNNING":"§aBackup: IDLE"));
+                    sender.sendMessage(plugin.pref() + (plugin.isBackupRunning()?"§eBackup: RUNNING":"§aBackup: IDLE") + " §8phase=" + plugin.getLastPhase());
+                    if (plugin.isBackupRunning()) {
+                        sender.sendMessage("§7ElapsedMs: §f" + plugin.getCurrentElapsedMs());
+                        sender.sendMessage("§7Files: §f" + plugin.getFilesCopiedThisRun() + " §7Bytes: §f" + plugin.getBytesCopiedThisRun());
+                        if (plugin.getTotalBytesPlanned() > 0) {
+                            sender.sendMessage("§7PlannedBytes: §f" + plugin.getTotalBytesPlanned());
+                            double pct = plugin.getPercentComplete();
+                            if (pct >= 0) sender.sendMessage("§7Progress: §f" + String.format("%.2f", pct) + "%");
+                            double thr = plugin.getThroughputBytesPerSec();
+                            if (thr > 0) sender.sendMessage("§7Throughput: §f" + String.format("%.2f", thr/1024/1024) + " MB/s");
+                            long eta = plugin.getEtaSeconds();
+                            if (eta >= 0) sender.sendMessage("§7ETA: §f" + eta + "s");
+                        }
+                    }
                     long dur = plugin.getLastBackupDuration();
                     if (dur > 0) sender.sendMessage("§7Last duration: §f" + dur + "ms");
                     long end = plugin.getLastBackupEnd();
                     if (end > 0) sender.sendMessage("§7Last finished: §f" + end);
                     sender.sendMessage("§7Cached timestamps: §f" + plugin.getCachedTimestamps().size());
+                    return true;
+                case "cancel":
+                    require(sender, "backupflow.cancel");
+                    if (!plugin.isBackupRunning()) { sender.sendMessage(plugin.pref() + "§cNo running backup"); return true; }
+                    plugin.requestCancel();
+                    sender.sendMessage(plugin.pref() + "§eCancel requested – backup will stop at next safe phase boundary");
                     return true;
                 case "reload":
                     require(sender, "backupflow.reload");
@@ -160,6 +204,10 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
         s.sendMessage("§f/backupflow retention plan [--keepDays N] [--max N] §7- retention preview");
         s.sendMessage("§f/backupflow manifests §7- list manifest files");
         s.sendMessage("§f/backupflow version §7- show plugin version");
+        s.sendMessage("§f/backupflow status §7- show running/last backup info");
+        s.sendMessage("§f/backupflow cancel §7- request cancellation of current backup");
+        s.sendMessage("§f/backupflow diag §7- extended diagnostics");
+        s.sendMessage("§f/backupflow reload §7- reload configuration");
     }
 
     @Override
@@ -167,7 +215,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
             String a = args[0].toLowerCase();
-            for (String opt : List.of("help","backup","list","restore","verify","retention","manifests","version","status","reload")) {
+            for (String opt : List.of("help","backup","list","restore","verify","retention","manifests","version","status","cancel","reload","diag")) {
                 if (opt.startsWith(a)) out.add(opt);
             }
         } else if (args.length == 2 && (args[0].equalsIgnoreCase("restore") || args[0].equalsIgnoreCase("verify"))) {

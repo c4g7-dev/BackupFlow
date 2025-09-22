@@ -37,6 +37,9 @@ permissions:
   backupflow.status:
     description: View backup status and metrics
     default: true
+  backupflow.cancel:
+    description: Request cancellation of a running backup
+    default: op
   backupflow.reload:
     description: Reload BackupFlow configuration
     default: op

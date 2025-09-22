@@ -23,6 +23,40 @@ public class BackupFlowPlugin extends JavaPlugin {
     private long lastTimestampCacheAt = 0L;
     private volatile String lastError = null;
 
+    // Instrumentation / watchdog
+    private volatile String lastPhase = "IDLE";
+    private volatile long lastPhaseAt = 0L;
+    private volatile boolean cancelRequested = false;
+    private int watchdogTaskId = -1;
+    private volatile Thread backupThread = null;
+    private final java.util.concurrent.atomic.AtomicLong filesCopiedThisRun = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong bytesCopiedThisRun = new java.util.concurrent.atomic.AtomicLong();
+    private volatile long lastProgressAt = 0L;
+    private volatile long totalFilesPlanned = 0L;
+    private volatile long totalBytesPlanned = 0L;
+    private java.util.Map<String, Long> planBreakdown = java.util.Collections.emptyMap();
+    private volatile String lastContentHash = null;
+
+    public String pref() { return prefix; }
+    public String getServerIdValue() { return serverId; }
+    public String getLastPhase() { return lastPhase; }
+    public long getLastPhaseAt() { return lastPhaseAt; }
+    public boolean isCancelRequested() { return cancelRequested; }
+    public void requestCancel() { if (backupRunning) cancelRequested = true; }
+    public String getLastError() { return lastError; }
+    private void updatePhase(String phase) { lastPhase = phase; lastPhaseAt = System.currentTimeMillis(); }
+    public long getLastProgressAt() { return lastProgressAt; }
+    public long getFilesCopiedThisRun() { return filesCopiedThisRun.get(); }
+    public long getBytesCopiedThisRun() { return bytesCopiedThisRun.get(); }
+    public boolean isBackupThreadAlive() { return backupThread != null && backupThread.isAlive(); }
+    public long getCurrentElapsedMs() { return backupRunning ? (System.currentTimeMillis() - lastBackupStart) : 0L; }
+    public long getTotalFilesPlanned() { return totalFilesPlanned; }
+    public long getTotalBytesPlanned() { return totalBytesPlanned; }
+    public double getPercentComplete() { return totalBytesPlanned > 0 ? (bytesCopiedThisRun.get() * 100.0 / totalBytesPlanned) : -1; }
+    public double getThroughputBytesPerSec() { long ms = getCurrentElapsedMs(); return ms > 0 ? (bytesCopiedThisRun.get() * 1000.0 / ms) : 0.0; }
+    public long getEtaSeconds() { double thr = getThroughputBytesPerSec(); if (thr <= 0 || totalBytesPlanned == 0) return -1; long remaining = totalBytesPlanned - bytesCopiedThisRun.get(); return remaining <=0 ? 0 : (long)Math.ceil(remaining / thr); }
+    public java.util.Map<String, Long> getPlanBreakdown() { return planBreakdown; }
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -48,6 +82,7 @@ public class BackupFlowPlugin extends JavaPlugin {
         registerCommands();
         scheduleAutoBackup();
         listOnStartup();
+        startWatchdog();
         getLogger().info("BackupFlow enabled. ServerId=" + serverId);
     }
 
@@ -55,12 +90,12 @@ public class BackupFlowPlugin extends JavaPlugin {
     public void onDisable() {
         if (taskId != -1) Bukkit.getScheduler().cancelTask(taskId);
         if (storage != null) storage.close();
+        if (watchdogTaskId != -1) Bukkit.getScheduler().cancelTask(watchdogTaskId);
     }
 
     private String detectServerId() {
-        String id = System.getenv("BACKUPFLOW_SERVER_ID");
+        String id = getConfig().getString("serverId");
         if (id != null && !id.isBlank()) return id.trim();
-        // fallback: derive from current working directory name (server root folder)
         try {
             Path cwd = Path.of("").toAbsolutePath().normalize();
             String name = cwd.getFileName() != null ? cwd.getFileName().toString() : null;
@@ -72,11 +107,8 @@ public class BackupFlowPlugin extends JavaPlugin {
     private void initPrefix() {
         boolean color = getConfig().getBoolean("color.enabled", true);
         if (!color) { this.prefix = "[BackupFlow] "; return; }
-        // Static legacy color gradient approximation (no Adventure dependency)
-        this.prefix = "§b§lB§3§lF§7 » §r";
+        this.prefix = "§b§lB§3§lF§7 » §r"; // static legacy gradient
     }
-
-    public String pref() { return prefix; }
 
     private void listOnStartup() {
         if (!cfg.getBoolean("autoListOnStart", false)) return;
@@ -114,31 +146,65 @@ public class BackupFlowPlugin extends JavaPlugin {
         }, delay, ticks);
     }
 
+    private void startWatchdog() {
+        long period = 20L * 15; // 15s
+        watchdogTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
+            if (!backupRunning) return;
+            if (lastBackupStart <= 0) return; // not yet initialized
+            long elapsed = System.currentTimeMillis() - lastBackupStart;
+            long hard = cfg.getLong("backup.hardTimeoutSeconds", 600L) * 1000L;
+            if (hard > 0 && elapsed > hard) {
+                getLogger().warning("Backup watchdog timeout exceeded (" + elapsed + "ms). Marking as failed.");
+                lastError = "Timeout after " + elapsed + "ms phase=" + lastPhase;
+                backupRunning = false;
+                cancelRequested = true;
+                updatePhase("TIMEOUT");
+                return;
+            }
+            long staleLimit = cfg.getLong("backup.phaseStaleSeconds", 0L) * 1000L;
+            if (staleLimit > 0 && (System.currentTimeMillis() - lastPhaseAt) > staleLimit) {
+                getLogger().warning("Backup phase stale for " + (System.currentTimeMillis() - lastPhaseAt) + "ms (phase=" + lastPhase + ")");
+            }
+            if (backupThread != null && !backupThread.isAlive()) {
+                getLogger().warning("Backup thread died unexpectedly; resetting state");
+                backupRunning = false;
+                updatePhase("IDLE");
+            }
+        }, period, period);
+    }
+
     public void runBackup(String reason) throws Exception {
         Instant ts = Instant.now();
         lastBackupStart = System.currentTimeMillis();
-        String prefix = storage.beginFullBackupKeyPrefix(ts);
+        String pfx = storage.beginFullBackupKeyPrefix(ts);
         Path tempRoot = ensureTemp();
         Path buildDir = Files.createTempDirectory(tempRoot, "bf-build-");
         try {
+            updatePhase("COLLECT");
             collectSources(buildDir);
+            if (cancelRequested) throw new RuntimeException("Cancelled");
+            updatePhase("COMPRESS");
             boolean wantHashes = cfg.getBoolean("integrity.hashes", true);
             var comp = com.c4g7.backupflow.util.CompressionUtils.compress(buildDir, cfg.getString("backup.compression", "zip"), wantHashes);
             String fileName = "full-" + ts.toEpochMilli() + "." + (cfg.getString("backup.compression", "zip").equalsIgnoreCase("gz") ? "tar.gz" : "zip");
-            storage.uploadFile(comp.archive, prefix + fileName);
+            if (cancelRequested) throw new RuntimeException("Cancelled");
+            updatePhase("UPLOAD_ARCHIVE");
+            storage.uploadFile(comp.archive, pfx + fileName);
             if (cfg.getBoolean("manifest.storeInBucket", true)) {
                 Path manifest;
+                updatePhase("WRITE_MANIFEST");
                 if (wantHashes && comp.hashes != null && !comp.hashes.isEmpty()) {
                     manifest = com.c4g7.backupflow.util.ManifestBuilder.writeManifestWithHashes(tempRoot, storage.randomManifestName(ts), reason, serverId, List.of(fileName), comp.hashes);
                 } else {
                     manifest = com.c4g7.backupflow.util.ManifestBuilder.writeSimpleManifest(tempRoot, storage.randomManifestName(ts), reason, serverId, List.of(fileName));
                 }
+                updatePhase("UPLOAD_MANIFEST");
                 storage.uploadFile(manifest, storage.manifestObjectName(manifest.getFileName().toString()));
             }
             lastBackupEnd = System.currentTimeMillis();
             getLogger().info("Backup complete: " + fileName + " (reason=" + reason + ") took " + (lastBackupEnd - lastBackupStart) + "ms");
-            // refresh timestamp cache in background
             refreshTimestampCacheAsync(true);
+            updatePhase("DONE");
         } finally {
             com.c4g7.backupflow.util.FileUtils.deleteQuietly(buildDir);
         }
@@ -152,8 +218,36 @@ public class BackupFlowPlugin extends JavaPlugin {
         Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
             boolean started = false;
             try {
-                // Only mark running once build dir is actually created
+                cancelRequested = false;
+                updatePhase("INIT");
+                lastBackupStart = System.currentTimeMillis();
                 backupRunning = true; started = true;
+                filesCopiedThisRun.set(0L);
+                bytesCopiedThisRun.set(0L);
+                lastProgressAt = System.currentTimeMillis();
+                backupThread = Thread.currentThread();
+                // Pre-scan to estimate total files/bytes for ETA
+                try {
+                    updatePhase("PRE_SCAN");
+                    long prescanStart = System.currentTimeMillis();
+                    var plan = planSources();
+                    long prescanTime = System.currentTimeMillis() - prescanStart;
+                    getLogger().info("Pre-scan completed in " + prescanTime + "ms");
+                    totalFilesPlanned = plan.files;
+                    totalBytesPlanned = plan.bytes;
+                    planBreakdown = plan.breakdown;
+                } catch (RuntimeException re) {
+                    if ("NO_CHANGES_DETECTED".equals(re.getMessage())) {
+                        if (initiator != null) initiator.sendMessage(pref() + "§aNo changes detected - backup skipped");
+                        getLogger().info("Backup skipped - no changes since last backup");
+                        return;
+                    }
+                    throw re;
+                } catch (Exception scanEx) {
+                    totalFilesPlanned = 0L; totalBytesPlanned = 0L;
+                    planBreakdown = java.util.Collections.emptyMap();
+                    getLogger().warning("Pre-scan failed: " + scanEx.getMessage() + " - continuing without ETA");
+                }
                 if (initiator != null) initiator.sendMessage(pref() + "§7Backup started...");
                 runBackup(reason);
                 if (initiator != null) initiator.sendMessage(pref() + "§aBackup completed in §f" + getLastBackupDuration() + "ms");
@@ -162,19 +256,22 @@ public class BackupFlowPlugin extends JavaPlugin {
                 getLogger().warning("Backup failed (endpoint=" + cfg.getString("s3.endpoint") + ", bucket=" + cfg.getString("s3.bucket") + "): " + ex.getMessage());
                 if (initiator != null) initiator.sendMessage(pref() + "§cBackup failed: " + ex.getMessage());
             } finally {
+                backupThread = null;
                 if (started) backupRunning = false;
+                updatePhase("IDLE");
+                totalFilesPlanned = 0L; totalBytesPlanned = 0L;
+                planBreakdown = java.util.Collections.emptyMap();
             }
         });
         return true;
     }
 
     public boolean isBackupRunning() { return backupRunning; }
-
     public long getLastBackupDuration() { return lastBackupEnd > lastBackupStart ? (lastBackupEnd - lastBackupStart) : 0L; }
     public long getLastBackupEnd() { return lastBackupEnd; }
 
     public java.util.List<String> getCachedTimestamps() {
-        int ttl = getConfig().getInt("timestampCacheSeconds", 60);
+        int ttl = cfg.getInt("timestampCacheSeconds", 60);
         long now = System.currentTimeMillis();
         if (ttl <= 0 || (now - lastTimestampCacheAt) > ttl * 1000L) {
             refreshTimestampCacheAsync(false);
@@ -183,7 +280,7 @@ public class BackupFlowPlugin extends JavaPlugin {
     }
 
     public void refreshTimestampCacheAsync(boolean force) {
-        int ttl = getConfig().getInt("timestampCacheSeconds", 60);
+        int ttl = cfg.getInt("timestampCacheSeconds", 60);
         long now = System.currentTimeMillis();
         if (!force && ttl > 0 && (now - lastTimestampCacheAt) < ttl * 1000L) return;
         Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
@@ -205,7 +302,6 @@ public class BackupFlowPlugin extends JavaPlugin {
             reloadConfig();
             cfg = getConfig();
             initPrefix();
-            // Recreate storage with new config values
             BackupStorageService old = this.storage;
             try {
                 this.storage = new BackupStorageService(
@@ -229,6 +325,7 @@ public class BackupFlowPlugin extends JavaPlugin {
             if (taskId != -1) { Bukkit.getScheduler().cancelTask(taskId); taskId = -1; }
             scheduleAutoBackup();
             refreshTimestampCacheAsync(true);
+            if (getCachedTimestamps().isEmpty()) getLogger().info("Post-reload: no backups detected yet (endpoint=" + cfg.getString("s3.endpoint") + ")");
             return true;
         } catch (Exception e) {
             getLogger().warning("Reload failed: " + e.getMessage());
@@ -237,7 +334,6 @@ public class BackupFlowPlugin extends JavaPlugin {
     }
 
     private void collectSources(Path buildDir) throws IOException {
-        // Determine effective sections based on wildcard rules
         List<String> worlds = cfg.getStringList("backup.include.worlds");
         boolean plugins = cfg.getBoolean("backup.include.plugins", true);
         boolean configs = cfg.getBoolean("backup.include.configs", true);
@@ -246,28 +342,22 @@ public class BackupFlowPlugin extends JavaPlugin {
         boolean wildcard = false;
         if (worlds.stream().anyMatch(s -> s.equalsIgnoreCase("*"))) wildcard = true;
         if (extra.stream().anyMatch(s -> s.equalsIgnoreCase("*"))) wildcard = true;
-
-        // If all lists empty and booleans absent => treat as wildcard (include everything sensible)
         if ((worlds.isEmpty()) && extra.isEmpty() && !cfg.isSet("backup.include.plugins") && !cfg.isSet("backup.include.configs")) {
             wildcard = true;
         }
 
         if (wildcard) {
-            // Worlds: auto-detect directories with level.dat (standard MC worlds)
             try (var stream = Files.list(Path.of("."))) {
                 stream.filter(p -> Files.isDirectory(p) && Files.exists(p.resolve("level.dat")))
                         .forEach(p -> {
                             try { copyIfExists(p, buildDir.resolve("worlds").resolve(p.getFileName().toString())); } catch (IOException ignored) { }
                         });
             }
-            // Plugins
             copyIfExists(Path.of("plugins"), buildDir.resolve("plugins"));
-            // Config roots
             copyIfExists(Path.of("server.properties"), buildDir.resolve("configs/server.properties"));
             copyIfExists(Path.of("bukkit.yml"), buildDir.resolve("configs/bukkit.yml"));
             copyIfExists(Path.of("spigot.yml"), buildDir.resolve("configs/spigot.yml"));
             copyIfExists(Path.of("paper-global.yml"), buildDir.resolve("configs/paper-global.yml"));
-            // No extras in wildcard unless specified
             for (String ex : extra) {
                 if (ex.equals("*")) continue;
                 copyIfExists(Path.of(ex), buildDir.resolve("extra").resolve(ex));
@@ -275,14 +365,11 @@ public class BackupFlowPlugin extends JavaPlugin {
             return;
         }
 
-        // Explicit worlds list
         for (String w : worlds) {
-            if (w.equals("*")) continue; // already handled
+            if (w.equals("*")) continue;
             copyIfExists(Path.of(w), buildDir.resolve("worlds").resolve(w));
         }
-        if (plugins) {
-            copyIfExists(Path.of("plugins"), buildDir.resolve("plugins"));
-        }
+        if (plugins) copyIfExists(Path.of("plugins"), buildDir.resolve("plugins"));
         if (configs) {
             copyIfExists(Path.of("server.properties"), buildDir.resolve("configs/server.properties"));
             copyIfExists(Path.of("bukkit.yml"), buildDir.resolve("configs/bukkit.yml"));
@@ -290,15 +377,175 @@ public class BackupFlowPlugin extends JavaPlugin {
             copyIfExists(Path.of("paper-global.yml"), buildDir.resolve("configs/paper-global.yml"));
         }
         for (String ex : extra) {
-            if (ex.equals("*")) continue; // wildcard not meaningful here
+            if (ex.equals("*")) continue;
             copyIfExists(Path.of(ex), buildDir.resolve("extra").resolve(ex));
         }
     }
 
+    // Planning structure
+    private static final class PlanStats { 
+        long files; 
+        long bytes; 
+        java.util.Map<String,Long> breakdown = new java.util.LinkedHashMap<>();
+        StringBuilder hashInput = new StringBuilder(); // For content hash
+    }
+
+    private PlanStats planSources() throws IOException {
+        PlanStats ps = new PlanStats();
+        List<String> worlds = cfg.getStringList("backup.include.worlds");
+        boolean plugins = cfg.getBoolean("backup.include.plugins", true);
+        boolean configs = cfg.getBoolean("backup.include.configs", true);
+        List<String> extra = cfg.getStringList("backup.include.extraPaths");
+        
+        getLogger().info("Pre-scan config: worlds=" + worlds + ", plugins=" + plugins + ", configs=" + configs + ", extra=" + extra);
+        
+        boolean wildcard = false;
+        if (worlds.stream().anyMatch(s -> s.equalsIgnoreCase("*"))) wildcard = true;
+        if (extra.stream().anyMatch(s -> s.equalsIgnoreCase("*"))) wildcard = true;
+        if ((worlds.isEmpty()) && extra.isEmpty() && !cfg.isSet("backup.include.plugins") && !cfg.isSet("backup.include.configs")) wildcard = true;
+
+        getLogger().info("Using wildcard mode: " + wildcard + " (scanning from " + Path.of(".").toAbsolutePath() + ")");
+
+        // Get temp dir path for exclusion
+        String tempDirPath = cfg.getString("restore.tempDir", "plugins/BackupFlow/work/tmp");
+        Path tempDir = Path.of(tempDirPath).toAbsolutePath().normalize();
+        
+        java.util.function.Consumer<Path> accumulator = p -> {
+            try {
+                if (Files.isRegularFile(p)) {
+                    // Skip files in temp directory
+                    Path normalized = p.toAbsolutePath().normalize();
+                    if (normalized.startsWith(tempDir)) {
+                        return; // Skip temp files
+                    }
+                    ps.files++;
+                    try { 
+                        long size = Files.size(p);
+                        ps.bytes += size;
+                        
+                        // Add to hash input: path + size + lastModified for change detection
+                        long lastMod = Files.getLastModifiedTime(p).toMillis();
+                        ps.hashInput.append(p.toString()).append(":").append(size).append(":").append(lastMod).append(";");
+                    } catch (IOException ignored) {}
+                }
+            } catch (Exception ignored) {}
+        };
+
+        java.util.function.BiConsumer<String, Path> rootWalk = (label, root) -> {
+            long beforeBytes = ps.bytes; long beforeFiles = ps.files;
+            long scanStart = System.currentTimeMillis();
+            getLogger().info("Pre-scanning: " + label + " at " + root.toAbsolutePath());
+            
+            try {
+                // Timeout protection for slow scans
+                java.util.concurrent.CompletableFuture<Void> scanTask = java.util.concurrent.CompletableFuture.runAsync(() -> {
+                    walk(root, accumulator);
+                });
+                
+                // Wait max 10 seconds for each directory scan
+                scanTask.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                
+            } catch (java.util.concurrent.TimeoutException e) {
+                getLogger().warning("Pre-scan timeout for " + label + " after 10s - skipping (may have large cache/data folders)");
+                return;
+            } catch (Exception e) {
+                getLogger().warning("Pre-scan failed for " + label + ": " + e.getMessage());
+                return;
+            }
+            
+            long deltaBytes = ps.bytes - beforeBytes; long deltaFiles = ps.files - beforeFiles;
+            long scanTime = System.currentTimeMillis() - scanStart;
+            getLogger().info("Pre-scan result: " + label + " -> " + deltaFiles + " files, " + deltaBytes + " bytes (" + scanTime + "ms)");
+            if (deltaFiles > 0 || deltaBytes > 0) ps.breakdown.put(label + "(" + deltaFiles + ")", deltaBytes);
+        };
+
+        if (wildcard) {
+            try (var stream = Files.list(Path.of("."))) {
+                stream.filter(p -> Files.isDirectory(p) && Files.exists(p.resolve("level.dat")))
+                        .forEach(world -> rootWalk.accept("world:" + world.getFileName(), world));
+            }
+            rootWalk.accept("plugins", Path.of("plugins"));
+            // config roots (individual files)
+            for (String cfgFile : List.of("server.properties","bukkit.yml","spigot.yml","paper-global.yml")) {
+                Path p = Path.of(cfgFile); if (Files.exists(p) && Files.isRegularFile(p)) { ps.files++; try { ps.bytes += Files.size(p);} catch (IOException ignored) {} }
+            }
+            for (String ex : extra) {
+                if (ex.equals("*")) continue;
+                rootWalk.accept("extra:" + ex, Path.of(ex));
+            }
+            return ps;
+        }
+
+        for (String w : worlds) { if (!w.equals("*")) rootWalk.accept("world:" + w, Path.of(w)); }
+        if (plugins) rootWalk.accept("plugins", Path.of("plugins"));
+        if (configs) {
+            for (String cfgFile : List.of("server.properties","bukkit.yml","spigot.yml","paper-global.yml")) {
+                Path p = Path.of(cfgFile); if (Files.exists(p) && Files.isRegularFile(p)) { ps.files++; try { ps.bytes += Files.size(p);} catch (IOException ignored) {} }
+            }
+        }
+        for (String ex : extra) { if (!ex.equals("*")) rootWalk.accept("extra:" + ex, Path.of(ex)); }
+        
+        // Compute content hash for change detection
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            String contentHash = toHex(md.digest(ps.hashInput.toString().getBytes()));
+            ps.breakdown.put("ContentHash", (long)contentHash.hashCode()); // Store in breakdown for display
+            getLogger().info("Content hash: " + contentHash);
+            
+            // Check if content changed
+            if (cfg.getBoolean("backup.skipUnchanged", true) && contentHash.equals(lastContentHash)) {
+                getLogger().info("No changes detected - content hash matches previous backup");
+                throw new RuntimeException("NO_CHANGES_DETECTED");
+            }
+            
+            lastContentHash = contentHash;
+        } catch (java.security.NoSuchAlgorithmException e) {
+            getLogger().warning("Could not compute content hash: " + e.getMessage());
+        }
+        
+        return ps;
+    }
+
+    private void walk(Path root, java.util.function.Consumer<Path> consumer) {
+        try {
+            if (!Files.exists(root)) return;
+            if (Files.isRegularFile(root)) { consumer.accept(root); return; }
+            
+            // Get temp dir for exclusion
+            String tempDirPath = cfg.getString("restore.tempDir", "plugins/BackupFlow/work/tmp");
+            Path tempDir = Path.of(tempDirPath).toAbsolutePath().normalize();
+            
+            Files.walk(root)
+                .filter(p -> {
+                    try {
+                        Path normalized = p.toAbsolutePath().normalize();
+                        return !normalized.startsWith(tempDir); // Skip temp directory
+                    } catch (Exception e) {
+                        return true; // Include if can't normalize
+                    }
+                })
+                .forEach(consumer);
+        } catch (IOException ignored) { }
+    }
+
     private void copyIfExists(Path src, Path dest) throws IOException {
         if (!Files.exists(src)) return;
+        
+        // Get temp dir for exclusion
+        String tempDirPath = cfg.getString("restore.tempDir", "plugins/BackupFlow/work/tmp");
+        Path tempDir = Path.of(tempDirPath).toAbsolutePath().normalize();
+        
         if (Files.isDirectory(src)) {
-            Files.walk(src).forEach(p -> {
+            Files.walk(src)
+                .filter(p -> {
+                    try {
+                        Path normalized = p.toAbsolutePath().normalize();
+                        return !normalized.startsWith(tempDir); // Skip temp directory
+                    } catch (Exception e) {
+                        return true; // Include if can't normalize
+                    }
+                })
+                .forEach(p -> {
                 try {
                     Path rel = src.relativize(p);
                     Path target = dest.resolve(rel.toString());
@@ -307,12 +554,27 @@ public class BackupFlowPlugin extends JavaPlugin {
                     } else {
                         Files.createDirectories(target.getParent());
                         Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING);
+                        filesCopiedThisRun.incrementAndGet();
+                        try { bytesCopiedThisRun.addAndGet(Files.size(p)); } catch (IOException ignored) {}
+                        lastProgressAt = System.currentTimeMillis();
+                        if (cancelRequested) throw new RuntimeException("Cancelled");
                     }
                 } catch (IOException ignored) { }
+                catch (RuntimeException rte) { throw rte; }
             });
         } else {
+            // Check if single file is in temp dir
+            Path normalized = src.toAbsolutePath().normalize();
+            if (normalized.startsWith(tempDir)) {
+                return; // Skip temp file
+            }
+            
             Files.createDirectories(dest.getParent());
             Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING);
+            filesCopiedThisRun.incrementAndGet();
+            try { bytesCopiedThisRun.addAndGet(Files.size(src)); } catch (IOException ignored) {}
+            lastProgressAt = System.currentTimeMillis();
+            if (cancelRequested) throw new RuntimeException("Cancelled");
         }
     }
 
@@ -378,7 +640,6 @@ public class BackupFlowPlugin extends JavaPlugin {
         java.nio.file.Path tempRoot = ensureTemp();
         java.nio.file.Path dl = tempRoot.resolve(archiveNameZip);
         storage.downloadFile(keyPrefix + archiveNameZip, dl);
-        // Download manifest if present
         java.util.List<String> manifests = storage.listManifests();
         String manifestForTs = null;
         for (String m : manifests) if (m.contains(timestamp)) { manifestForTs = m; break; }
@@ -389,7 +650,6 @@ public class BackupFlowPlugin extends JavaPlugin {
             String json = java.nio.file.Files.readString(mf);
             int idx = json.indexOf("\"hashes\":");
             if (idx >= 0) {
-                // naive parse: {"hashes":{"path":"hex",...}}
                 String sub = json.substring(idx);
                 int open = sub.indexOf('{');
                 int close = sub.indexOf('}');
@@ -415,9 +675,8 @@ public class BackupFlowPlugin extends JavaPlugin {
                 String name = e.getName();
                 if (!selector.test(name)) continue;
                 stats.total++;
-                if (hashes.isEmpty()) continue; // nothing to compare
+                if (hashes.isEmpty()) continue;
                 if (!hashes.containsKey(name)) { stats.missing++; stats.problems.add("not-in-manifest:"+name); continue; }
-                // compute hash
                 java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
                 byte[] buf = new byte[8192]; int r;
                 while ((r = zis.read(buf)) != -1) md.update(buf,0,r);
@@ -425,7 +684,7 @@ public class BackupFlowPlugin extends JavaPlugin {
                 String expected = hashes.get(name);
                 if (expected.equalsIgnoreCase(calc)) stats.matched++; else { stats.mismatched++; stats.problems.add("mismatch:"+name); }
             }
-        } catch (Exception ex) { throw ex; }
+        }
         return stats;
     }
 
