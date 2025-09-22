@@ -13,3 +13,24 @@ permissions:
   backupflow.admin:
     description: All BackupFlow permissions
     default: op
+  backupflow.backup:
+    description: Run manual backups
+    default: op
+  backupflow.restore:
+    description: Restore backups (any section)
+    default: op
+  backupflow.verify:
+    description: Verify backup integrity via hashes
+    default: op
+  backupflow.retention:
+    description: View retention plans
+    default: op
+  backupflow.list:
+    description: List backup timestamps
+    default: true
+  backupflow.manifests:
+    description: List manifests
+    default: true
+  backupflow.version:
+    description: View plugin version
+    default: true

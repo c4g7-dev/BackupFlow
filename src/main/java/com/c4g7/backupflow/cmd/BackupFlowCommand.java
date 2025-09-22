@@ -26,12 +26,12 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
         try {
             switch (sub) {
                 case "backup":
-                    requireAdmin(sender);
+                    require(sender, "backupflow.backup");
                     plugin.runBackup("manual");
                     sender.sendMessage("§aBackup started.");
                     return true;
                 case "restore":
-                    requireAdmin(sender);
+                    require(sender, "backupflow.restore");
                     if (args.length < 2) {
                         sender.sendMessage("§cUsage: /" + label + " restore <timestamp> [--select worlds,plugins,configs,extra] [--force]");
                         return true;
@@ -54,7 +54,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage("§7Restore queued for " + ts + (sections.isEmpty()?" (all sections)":" sections=" + sections));
                     return true;
                 case "verify":
-                    requireAdmin(sender);
+                    require(sender, "backupflow.verify");
                     if (args.length < 2) {
                         sender.sendMessage("§cUsage: /" + label + " verify <timestamp> [--select worlds,plugins,configs,extra]");
                         return true;
@@ -73,7 +73,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     plugin.verifyBackupAsync(vts, vSections, sender);
                     return true;
                 case "retention":
-                    requireAdmin(sender);
+                    require(sender, "backupflow.retention");
                     if (args.length >= 2 && args[1].equalsIgnoreCase("plan")) {
                         Integer keepDays = null; Integer max = null;
                         for (int i=2;i<args.length;i++) {
@@ -92,14 +92,17 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage("§cUsage: /" + label + " retention plan [--keepDays N] [--max N]");
                     return true;
                 case "list":
+                    require(sender, "backupflow.list");
                     var list = plugin.getStorage().listBackups("full");
                     sender.sendMessage("§eFull Backups (" + list.size() + "): " + list);
                     return true;
                 case "manifests":
+                    require(sender, "backupflow.manifests");
                     var manifests = plugin.getStorage().listManifests();
                     sender.sendMessage("§eManifests (" + manifests.size() + "): " + manifests);
                     return true;
                 case "version":
+                    require(sender, "backupflow.version");
                     sender.sendMessage("BackupFlow " + plugin.getDescription().getVersion());
                     return true;
                 default:
@@ -112,8 +115,10 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    private void requireAdmin(CommandSender sender) {
-        if (!(sender.hasPermission("backupflow.admin") || !(sender instanceof Player))) return;
+    private void require(CommandSender sender, String node) {
+        if (sender.hasPermission("backupflow.admin")) return;
+        if (sender.hasPermission(node)) return;
+        throw new RuntimeException("Missing permission: " + node);
     }
 
     private void sendHelp(CommandSender s) {

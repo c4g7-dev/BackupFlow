@@ -128,9 +128,14 @@ integrity:
 ## Permissions
 | Node | Purpose | Default |
 |------|---------|---------|
-| `backupflow.admin` | All commands | op |
-
-(Granular nodes will be added with restore & incremental features.)
+| `backupflow.admin` | All commands (override) | op |
+| `backupflow.backup` | Run manual backup | op |
+| `backupflow.restore` | Restore backups | op |
+| `backupflow.verify` | Verify backups (hash compare) | op |
+| `backupflow.retention` | View retention plan | op |
+| `backupflow.list` | List backup epochs | true |
+| `backupflow.manifests` | List manifest objects | true |
+| `backupflow.version` | View plugin version | true |
 
 ---
 ## Environment Variables
