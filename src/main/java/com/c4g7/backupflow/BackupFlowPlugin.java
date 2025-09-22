@@ -22,8 +22,6 @@ public class BackupFlowPlugin extends JavaPlugin {
     private java.util.List<String> cachedTimestamps = new java.util.concurrent.CopyOnWriteArrayList<>();
     private long lastTimestampCacheAt = 0L;
     private volatile String lastError = null;
-    private net.kyori.adventure.text.minimessage.MiniMessage miniMessage;
-    private net.kyori.adventure.platform.bukkit.BukkitAudiences audiences;
 
     @Override
     public void onEnable() {
@@ -46,8 +44,6 @@ public class BackupFlowPlugin extends JavaPlugin {
             return;
         }
         try { storage.createRoot(); } catch (Exception ignored) {}
-        audiences = net.kyori.adventure.platform.bukkit.BukkitAudiences.create(this);
-        miniMessage = net.kyori.adventure.text.minimessage.MiniMessage.miniMessage();
         initPrefix();
         registerCommands();
         scheduleAutoBackup();
@@ -59,7 +55,6 @@ public class BackupFlowPlugin extends JavaPlugin {
     public void onDisable() {
         if (taskId != -1) Bukkit.getScheduler().cancelTask(taskId);
         if (storage != null) storage.close();
-        if (audiences != null) audiences.close();
     }
 
     private String detectServerId() {
@@ -77,15 +72,8 @@ public class BackupFlowPlugin extends JavaPlugin {
     private void initPrefix() {
         boolean color = getConfig().getBoolean("color.enabled", true);
         if (!color) { this.prefix = "[BackupFlow] "; return; }
-        // Build MiniMessage gradient similar style
-        String mm = "<gradient:#4fc3f7:#0288d1><bold>BF</bold></gradient> <gray>» </gray>";
-        // Convert to legacy once for performance
-        try {
-            var comp = miniMessage.deserialize(mm);
-            this.prefix = net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().serialize(comp);
-        } catch (Exception e) {
-            this.prefix = "§b§lB§3§lF§7 » §r";
-        }
+        // Static legacy color gradient approximation (no Adventure dependency)
+        this.prefix = "§b§lB§3§lF§7 » §r";
     }
 
     public String pref() { return prefix; }
