@@ -50,8 +50,13 @@ public class BackupFlowPlugin extends JavaPlugin {
     private String detectServerId() {
         String id = System.getenv("BACKUPFLOW_SERVER_ID");
         if (id != null && !id.isBlank()) return id.trim();
-        // fallback: folder name or random
-        return getServer().getServerId() != null ? getServer().getServerId() : "srv" + Integer.toHexString(ThreadLocalRandom.current().nextInt());
+        // fallback: derive from current working directory name (server root folder)
+        try {
+            Path cwd = Path.of("").toAbsolutePath().normalize();
+            String name = cwd.getFileName() != null ? cwd.getFileName().toString() : null;
+            if (name != null && !name.isBlank()) return name.replaceAll("[^a-zA-Z0-9-_]","-");
+        } catch (Exception ignored) { }
+        return "srv" + Integer.toHexString(ThreadLocalRandom.current().nextInt());
     }
 
     private void registerCommands() {
