@@ -24,6 +24,16 @@ backup:
   hardTimeoutSeconds: 600    # watchdog hard timeout for a single full backup (0=disable)
   phaseStaleSeconds: 300     # warn if a phase (e.g., COLLECT) exceeds this without progress (0=disable)
   skipUnchanged: true        # skip backup if no files changed since last backup (based on content hash)
+  performance:
+    compressionLevel: 6      # 0-9: 0=no compression, 6=default, 9=max compression (slower)
+    uploadPartSizeMB: 64     # S3 multipart upload part size in MB (larger = faster for big files)
+    uploadBufferSizeMB: 8    # Upload buffer size in MB (larger = faster, more memory)
+    parallelCompress: false  # Enable parallel file processing during compression (experimental)
+    # Advanced upload optimization
+    connectionPoolSize: 10   # HTTP connection pool size for S3 client
+    readTimeoutSeconds: 300  # Socket read timeout for uploads
+    writeTimeoutSeconds: 300 # Socket write timeout for uploads
+    maxConcurrentUploads: 3  # For future parallel upload implementation
   schedule:
     enabled: true
     intervalMinutes: 60     # run every X minutes

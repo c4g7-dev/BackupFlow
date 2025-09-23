@@ -189,7 +189,9 @@ public class BackupFlowPlugin extends JavaPlugin {
             String fileName = "full-" + ts.toEpochMilli() + "." + (cfg.getString("backup.compression", "zip").equalsIgnoreCase("gz") ? "tar.gz" : "zip");
             if (cancelRequested) throw new RuntimeException("Cancelled");
             updatePhase("UPLOAD_ARCHIVE");
-            storage.uploadFile(comp.archive, pfx + fileName);
+            int partSizeMB = cfg.getInt("backup.performance.uploadPartSizeMB", 64);
+            int bufferSizeMB = cfg.getInt("backup.performance.uploadBufferSizeMB", 8);
+            storage.uploadFile(comp.archive, pfx + fileName, partSizeMB * 1024 * 1024, bufferSizeMB * 1024 * 1024);
             if (cfg.getBoolean("manifest.storeInBucket", true)) {
                 Path manifest;
                 updatePhase("WRITE_MANIFEST");

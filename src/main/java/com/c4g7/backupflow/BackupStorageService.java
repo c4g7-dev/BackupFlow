@@ -26,11 +26,28 @@ public class BackupStorageService implements AutoCloseable {
     private final String serverId;
 
     public BackupStorageService(String endpoint, boolean secure, String access, String secret, String bucket, String rootDir, String serverId) {
+        this(endpoint, secure, access, secret, bucket, rootDir, serverId, 10, 300, 300);
+    }
+
+    public BackupStorageService(String endpoint, boolean secure, String access, String secret, String bucket, String rootDir, String serverId, 
+                               int connectionPoolSize, int readTimeoutSeconds, int writeTimeoutSeconds) {
         if (endpoint == null || access == null || secret == null || bucket == null) throw new IllegalArgumentException("Missing S3 config");
         this.bucket = bucket;
         this.rootDir = (rootDir == null || rootDir.isBlank()) ? "FlowStack/BackupFlow" : rootDir.replaceAll("^/+|/+$", "");
         this.serverId = (serverId == null || serverId.isBlank()) ? "default" : serverId;
-        MinioClient.Builder builder = MinioClient.builder().credentials(access, secret);
+        
+        // Configure HTTP client with performance settings
+        okhttp3.OkHttpClient httpClient = new okhttp3.OkHttpClient.Builder()
+            .connectionPool(new okhttp3.ConnectionPool(connectionPoolSize, 5, java.util.concurrent.TimeUnit.MINUTES))
+            .readTimeout(readTimeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(writeTimeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build();
+        
+        MinioClient.Builder builder = MinioClient.builder()
+            .credentials(access, secret)
+            .httpClient(httpClient);
+            
         String ep = endpoint.trim();
         try {
             if (ep.startsWith("http://") || ep.startsWith("https://")) builder = builder.endpoint(ep);
@@ -53,12 +70,18 @@ public class BackupStorageService implements AutoCloseable {
     }
 
     public void uploadFile(Path file, String objectName) throws Exception {
+        uploadFile(file, objectName, 64 * 1024 * 1024, 8 * 1024 * 1024); // Default: 64MB part, 8MB buffer
+    }
+
+    public void uploadFile(Path file, String objectName, int partSize, int bufferSize) throws Exception {
         long fileSize = Files.size(file);
-        try (InputStream in = new java.io.BufferedInputStream(Files.newInputStream(file), 1024 * 1024)) { // 1MB buffer
+        // Use larger buffer for better performance with large files
+        int effectiveBufferSize = Math.max(bufferSize, 4 * 1024 * 1024); // Minimum 4MB buffer
+        try (InputStream in = new java.io.BufferedInputStream(Files.newInputStream(file), effectiveBufferSize)) {
             client.putObject(PutObjectArgs.builder()
                     .bucket(bucket)
                     .object(objectName)
-                    .stream(in, fileSize, 10 * 1024 * 1024) // 10MB part size for multipart
+                    .stream(in, fileSize, partSize)
                     .contentType("application/octet-stream")
                     .build());
         }

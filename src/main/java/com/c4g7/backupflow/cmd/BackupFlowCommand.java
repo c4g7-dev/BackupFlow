@@ -6,6 +6,9 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -94,8 +97,24 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     require(sender, "backupflow.list");
                     var list = plugin.getStorage().listBackups("full");
                     sender.sendMessage(plugin.pref() + "§bBackups §7(" + list.size() + "):");
-                    if (list.isEmpty()) sender.sendMessage("§8 (none)");
-                    else sender.sendMessage("§7 " + list);
+                    if (list.isEmpty()) {
+                        sender.sendMessage("§8 (none)");
+                    } else {
+                        // Sort timestamps in descending order (newest first)
+                        list.sort((a, b) -> Long.compare(Long.parseLong(b), Long.parseLong(a)));
+                        for (String timestamp : list) {
+                            try {
+                                long epochSeconds = Long.parseLong(timestamp);
+                                Instant instant = Instant.ofEpochSecond(epochSeconds);
+                                String humanDate = instant.atZone(ZoneId.systemDefault())
+                                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                                sender.sendMessage("§7  " + humanDate + " §8(unix: " + timestamp + ")");
+                            } catch (NumberFormatException e) {
+                                // Fallback to raw timestamp if parsing fails
+                                sender.sendMessage("§7  " + timestamp);
+                            }
+                        }
+                    }
                     return true;
                 case "manifests":
                     require(sender, "backupflow.manifests");
@@ -145,6 +164,12 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
                     if (plugin.isBackupRunning()) sender.sendMessage("§7LastProgressMs: §f" + lpAge);
                     if (plugin.getLastError() != null) sender.sendMessage("§7LastError: §c" + plugin.getLastError());
                     sender.sendMessage("§7Timeout(s): §f" + c.getLong("backup.hardTimeoutSeconds", 600L));
+                    // Performance settings
+                    sender.sendMessage("§bPerformance:");
+                    sender.sendMessage("§7CompressionLevel: §f" + c.getInt("backup.performance.compressionLevel", 6));
+                    sender.sendMessage("§7UploadPartSizeMB: §f" + c.getInt("backup.performance.uploadPartSizeMB", 64));
+                    sender.sendMessage("§7UploadBufferSizeMB: §f" + c.getInt("backup.performance.uploadBufferSizeMB", 8));
+                    sender.sendMessage("§7ParallelCompress: §f" + c.getBoolean("backup.performance.parallelCompress", false));
                     return true;
                 case "status":
                     require(sender, "backupflow.status");
@@ -198,7 +223,7 @@ public class BackupFlowCommand implements CommandExecutor, TabCompleter {
     private void sendHelp(CommandSender s) {
         s.sendMessage(plugin.pref() + "§bCommands:");
         s.sendMessage("§f/backupflow backup §7- run full backup");
-        s.sendMessage("§f/backupflow list §7- list backup timestamps");
+        s.sendMessage("§f/backupflow list §7- list backup timestamps (sorted, human-readable)");
         s.sendMessage("§f/backupflow restore <ts> [--select worlds,plugins,...] [--force] §7- restore backup");
         s.sendMessage("§f/backupflow verify <ts> [--select ...] §7- verify archive hashes");
         s.sendMessage("§f/backupflow retention plan [--keepDays N] [--max N] §7- retention preview");

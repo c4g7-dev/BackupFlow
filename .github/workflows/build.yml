@@ -39,7 +39,7 @@ jobs:
             awk -v tag="${TAG#v}" 'BEGIN{capture=0} \
               /^## \[/ { \
                 if(capture){exit} \
-                if($0 ~ "^## \\"[" tag "\\""){capture=1; print $0; next} \
+                if($0 ~ "^## \\[" tag "\\]"){capture=1; print $0; next} \
               } \
               { if(capture) print }' CHANGELOG.md > "$BODY_FILE"
           fi
