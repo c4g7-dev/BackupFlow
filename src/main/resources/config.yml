@@ -12,10 +12,46 @@ backup:
   include:
     # Use '*' in worlds list (or leave all include fields empty) to auto-detect all worlds (folders containing level.dat)
     # If ALL of: worlds list empty, extraPaths empty, and plugins/configs not explicitly set -> implicit '*'
-    worlds: ["world", "world_nether", "world_the_end"]  # or ["*"] for auto-detect
-    plugins: true      # omit AND use '*' to auto include
-    configs: true      # omit AND use '*' to auto include
-    extraPaths: []     # additional relative paths; '*' here is ignored
+    worlds: ["*"]  # Auto-detect all worlds with level.dat
+    plugins: true      # Include entire plugins directory (with smart exclusions)
+    configs: true      # Include all server configs, permissions, and plugin configs
+    extraPaths: [
+      "logs",          # Server logs (useful for debugging)
+      "permissions.yml", "ops.json", "whitelist.json", "banned-players.json", "banned-ips.json",
+      "eula.txt", "server.properties", 
+      "bukkit.yml", "spigot.yml", "paper-global.yml", "paper-world-defaults.yml",
+      "purpur.yml", "pufferfish.yml", "airplane.yml",  # Alternative server configs
+      "config"         # Additional config directory if exists
+    ]
+  # Smart exclusions - only exclude cache, temp, and log files that can be regenerated
+  exclude:
+    patterns:
+      # Minecraft server cache and temp files
+      - "cache/**"
+      - "logs/*.log.gz"        # Keep recent logs, exclude compressed old ones
+      - "world/session.lock"
+      - "**/uid.dat"
+      - "**/session.lock"
+      # Plugin caches and temp files that can be regenerated
+      - "plugins/**/cache/**"
+      - "plugins/**/temp/**"
+      - "plugins/**/tmp/**"
+      - "plugins/**/logs/*.log.gz"  # Exclude old compressed plugin logs
+      - "**/temp/**"
+      - "**/tmp/**"
+      # BackupFlow's own temp directory (prevent recursive backup)
+      - "plugins/BackupFlow/work/**"
+      # Common large regeneratable files
+      - "**/dynmap/web/tiles/**"    # DynMap tiles (regeneratable)
+      - "**/BlueMap/web/data/**"    # BlueMap data (regeneratable)
+      - "**/PlotSquared/schematics/**" # Large schematic files (optional)
+      # Version control and IDE files
+      - ".git/**"
+      - ".gitignore"
+      - ".idea/**"
+      - "*.iml"
+    maxFileSizeMB: 100           # Skip individual files larger than 100MB (configurable)
+    maxDirectorySizeMB: 2000     # Skip directories larger than 2GB (configurable)
   compression: zip   # zip | gz (tar.gz) | none
   chunkSizeMB: 32    # reserved for future incremental diff logic
   retention:

@@ -9,6 +9,7 @@ import java.nio.file.*;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Pattern;
 
 public class BackupFlowPlugin extends JavaPlugin {
     private BackupStorageService storage;
@@ -349,17 +350,40 @@ public class BackupFlowPlugin extends JavaPlugin {
         }
 
         if (wildcard) {
+            // Auto-detect all worlds
             try (var stream = Files.list(Path.of("."))) {
                 stream.filter(p -> Files.isDirectory(p) && Files.exists(p.resolve("level.dat")))
                         .forEach(p -> {
                             try { copyIfExists(p, buildDir.resolve("worlds").resolve(p.getFileName().toString())); } catch (IOException ignored) { }
                         });
             }
+            // Include all plugins
             copyIfExists(Path.of("plugins"), buildDir.resolve("plugins"));
+            
+            // Include comprehensive server configs
             copyIfExists(Path.of("server.properties"), buildDir.resolve("configs/server.properties"));
             copyIfExists(Path.of("bukkit.yml"), buildDir.resolve("configs/bukkit.yml"));
             copyIfExists(Path.of("spigot.yml"), buildDir.resolve("configs/spigot.yml"));
             copyIfExists(Path.of("paper-global.yml"), buildDir.resolve("configs/paper-global.yml"));
+            copyIfExists(Path.of("paper-world-defaults.yml"), buildDir.resolve("configs/paper-world-defaults.yml"));
+            copyIfExists(Path.of("purpur.yml"), buildDir.resolve("configs/purpur.yml"));
+            copyIfExists(Path.of("pufferfish.yml"), buildDir.resolve("configs/pufferfish.yml"));
+            copyIfExists(Path.of("airplane.yml"), buildDir.resolve("configs/airplane.yml"));
+            
+            // Include permissions and player data
+            copyIfExists(Path.of("permissions.yml"), buildDir.resolve("configs/permissions.yml"));
+            copyIfExists(Path.of("ops.json"), buildDir.resolve("configs/ops.json"));
+            copyIfExists(Path.of("whitelist.json"), buildDir.resolve("configs/whitelist.json"));
+            copyIfExists(Path.of("banned-players.json"), buildDir.resolve("configs/banned-players.json"));
+            copyIfExists(Path.of("banned-ips.json"), buildDir.resolve("configs/banned-ips.json"));
+            copyIfExists(Path.of("eula.txt"), buildDir.resolve("configs/eula.txt"));
+            
+            // Include logs directory (filtered by exclusions)
+            copyIfExists(Path.of("logs"), buildDir.resolve("logs"));
+            
+            // Include additional config directory if exists
+            copyIfExists(Path.of("config"), buildDir.resolve("config"));
+            
             for (String ex : extra) {
                 if (ex.equals("*")) continue;
                 copyIfExists(Path.of(ex), buildDir.resolve("extra").resolve(ex));
@@ -373,10 +397,23 @@ public class BackupFlowPlugin extends JavaPlugin {
         }
         if (plugins) copyIfExists(Path.of("plugins"), buildDir.resolve("plugins"));
         if (configs) {
+            // Include comprehensive server configs
             copyIfExists(Path.of("server.properties"), buildDir.resolve("configs/server.properties"));
             copyIfExists(Path.of("bukkit.yml"), buildDir.resolve("configs/bukkit.yml"));
             copyIfExists(Path.of("spigot.yml"), buildDir.resolve("configs/spigot.yml"));
             copyIfExists(Path.of("paper-global.yml"), buildDir.resolve("configs/paper-global.yml"));
+            copyIfExists(Path.of("paper-world-defaults.yml"), buildDir.resolve("configs/paper-world-defaults.yml"));
+            copyIfExists(Path.of("purpur.yml"), buildDir.resolve("configs/purpur.yml"));
+            copyIfExists(Path.of("pufferfish.yml"), buildDir.resolve("configs/pufferfish.yml"));
+            copyIfExists(Path.of("airplane.yml"), buildDir.resolve("configs/airplane.yml"));
+            
+            // Include permissions and player data
+            copyIfExists(Path.of("permissions.yml"), buildDir.resolve("configs/permissions.yml"));
+            copyIfExists(Path.of("ops.json"), buildDir.resolve("configs/ops.json"));
+            copyIfExists(Path.of("whitelist.json"), buildDir.resolve("configs/whitelist.json"));
+            copyIfExists(Path.of("banned-players.json"), buildDir.resolve("configs/banned-players.json"));
+            copyIfExists(Path.of("banned-ips.json"), buildDir.resolve("configs/banned-ips.json"));
+            copyIfExists(Path.of("eula.txt"), buildDir.resolve("configs/eula.txt"));
         }
         for (String ex : extra) {
             if (ex.equals("*")) continue;
@@ -508,20 +545,84 @@ public class BackupFlowPlugin extends JavaPlugin {
         return ps;
     }
 
+    private boolean shouldExcludeFile(Path file, Path baseDir) {
+        try {
+            // Get exclusion patterns from config
+            List<String> patterns = cfg.getStringList("backup.exclude.patterns");
+            if (patterns.isEmpty()) {
+                // Default exclusions if none configured
+                patterns = List.of(
+                    "cache/**", "**/cache/**", "**/temp/**", "**/tmp/**", "plugins/BackupFlow/work/**",
+                    "logs/*.log.gz", "**/logs/*.log.gz", "world/session.lock", "**/session.lock", "**/uid.dat",
+                    ".git/**", ".idea/**", "*.iml", "**/dynmap/web/tiles/**", "**/BlueMap/web/data/**"
+                );
+            }
+            
+            // Get relative path for pattern matching
+            String relativePath = baseDir.relativize(file).toString().replace('\\', '/');
+            
+            // Check against patterns
+            for (String pattern : patterns) {
+                if (matchesGlobPattern(relativePath, pattern)) {
+                    return true;
+                }
+            }
+            
+            // Check file size limits
+            if (Files.isRegularFile(file)) {
+                long maxSizeMB = cfg.getLong("backup.exclude.maxFileSizeMB", 100);
+                if (maxSizeMB > 0) {
+                    long fileSizeMB = Files.size(file) / (1024 * 1024);
+                    if (fileSizeMB > maxSizeMB) {
+                        getLogger().info("Excluding large file (" + fileSizeMB + "MB): " + relativePath);
+                        return true;
+                    }
+                }
+            }
+            
+            return false;
+        } catch (Exception e) {
+            return false; // When in doubt, include the file
+        }
+    }
+    
+    private boolean matchesGlobPattern(String path, String pattern) {
+        // Convert glob pattern to regex
+        String regex = pattern
+            .replace(".", "\\.")
+            .replace("*", ".*")
+            .replace("?", ".")
+            .replace("/**", "/.*");
+        
+        // Handle ** (recursive directory matching)
+        regex = regex.replace(".*/..*", "(?:.*/)?.*");
+        
+        return Pattern.matches(regex, path);
+    }
+
     private void walk(Path root, java.util.function.Consumer<Path> consumer) {
         try {
             if (!Files.exists(root)) return;
-            if (Files.isRegularFile(root)) { consumer.accept(root); return; }
-            
-            // Get temp dir for exclusion
-            String tempDirPath = cfg.getString("restore.tempDir", "plugins/BackupFlow/work/tmp");
-            Path tempDir = Path.of(tempDirPath).toAbsolutePath().normalize();
+            if (Files.isRegularFile(root)) { 
+                if (!shouldExcludeFile(root, Path.of("."))) {
+                    consumer.accept(root); 
+                }
+                return; 
+            }
             
             Files.walk(root)
                 .filter(p -> {
                     try {
-                        Path normalized = p.toAbsolutePath().normalize();
-                        return !normalized.startsWith(tempDir); // Skip temp directory
+                        // Apply comprehensive exclusion logic
+                        return !shouldExcludeFile(p, root.getParent() != null ? root.getParent() : Path.of("."));
+                    } catch (Exception e) {
+                        return true; // When in doubt, include
+                    }
+                })
+                .forEach(consumer);
+        } catch (Exception e) {
+            getLogger().warning("Failed to walk " + root + ": " + e.getMessage());
+        }
                     } catch (Exception e) {
                         return true; // Include if can't normalize
                     }
