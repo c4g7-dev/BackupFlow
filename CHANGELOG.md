@@ -4,6 +4,40 @@ All notable changes to BackupFlow will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.4] - 2025-09-26
+### Added
+- **Comprehensive File Inclusion/Exclusion Logic**
+  - Enhanced server config inclusion: Paper, Purpur, Spigot, Bukkit, Pufferfish, Airplane configs
+  - Added player management files: ops.json, whitelist.json, banned-players.json, banned-ips.json, permissions.yml, eula.txt
+  - Comprehensive exclusion patterns with smart glob pattern matching for cache, temp, and compressed log files
+  - File size limit exclusions (configurable, default 100MB) to skip large regeneratable files
+  - Includes logs directory (filtered) and additional config directory if present
+
+- **Smart Pattern Matching System**
+  - New `shouldExcludeFile()` method with configurable exclusion patterns from config.yml
+  - Glob pattern support with `**` recursive directory matching and standard wildcards
+  - Conservative approach: includes files when exclusion logic fails for maximum reliability
+
+### Changed
+- **Default Configuration**
+  - Updated `config.yml` to use wildcard mode `worlds: ["*"]` for automatic world detection
+  - Comprehensive exclusion patterns covering plugin caches, temp directories, compressed logs
+  - Enhanced extraPaths to include all important server and permission files
+- **Backup Logic**
+  - Both wildcard and explicit modes now include comprehensive server configs and player data
+  - Improved exclusion filtering in walk() and copyIfExists() methods
+  - Better handling of temp directory exclusions to prevent recursive backups
+
+### Fixed
+- **File Coverage**: Ensures all important plugin configs and server configs are backed up
+- **Exclusion Logic**: Only excludes genuinely regeneratable files (caches, temps, compressed logs)
+- **Pattern Matching**: Robust glob-to-regex conversion with proper escaping and recursive matching
+
+### Technical
+- **Pattern System**: Configurable exclusion patterns in `backup.exclude.patterns` config section
+- **Performance**: Efficient file walking with smart exclusions to avoid unnecessary I/O
+- **Reliability**: Conservative inclusion policy ensures no important configs are missed
+
 ## [0.1.3] - 2025-09-23
 ### Added
 - **Aggressive Upload Performance Optimization**
