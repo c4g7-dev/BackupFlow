@@ -623,12 +623,6 @@ public class BackupFlowPlugin extends JavaPlugin {
         } catch (Exception e) {
             getLogger().warning("Failed to walk " + root + ": " + e.getMessage());
         }
-                    } catch (Exception e) {
-                        return true; // Include if can't normalize
-                    }
-                })
-                .forEach(consumer);
-        } catch (IOException ignored) { }
     }
 
     private void copyIfExists(Path src, Path dest) throws IOException {
